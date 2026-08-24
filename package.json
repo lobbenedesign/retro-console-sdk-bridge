@@ -1,0 +1,15 @@
+{
+  "name": "nintendo-universal-sdk",
+  "version": "1.0.0",
+  "description": "Unified Cross-Platform SDK Studio for Nintendo Retro & Modern Consoles (SNES, N64, GameCube, Wii, Switch)",
+  "main": "server.ts",
+  "scripts": {
+    "start": "bun server.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

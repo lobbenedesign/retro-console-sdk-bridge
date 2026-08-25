@@ -279,6 +279,7 @@ int main() {
 }</textarea>
         <div class="actions">
           <button class="btn-action btn-compile" onclick="runCompile()">Compila & Pacchettizza</button>
+          <button class="btn-action" style="background:#141929;color:#fff;border:1px solid var(--border);" onclick="runScaffold()">Genera Progetto Makefile Reale</button>
         </div>
         <div class="console-logs" id="logs">Pronto per la compilazione...</div>
       </div>
@@ -291,6 +292,10 @@ int main() {
         <div class="meta-item"><span>Compilatore</span><strong id="meta-compiler">aarch64-none-elf-gcc</strong></div>
         <div class="meta-item"><span>Dimensione ROM</span><strong id="meta-size">0 KB</strong></div>
         <div class="meta-item"><span>Tipo Build</span><strong id="meta-type">NRO Executable</strong></div>
+      </div>
+      <h2 style="margin-top:20px;">Toolchain reali su questa macchina</h2>
+      <div class="memory-map" id="toolchain-status">
+        <!-- popolato da /api/toolchains -->
       </div>
       <h2 style="margin-top:20px;">Memory Layout (RAM Map)</h2>
       <div class="memory-map" id="mem-map">
@@ -401,7 +406,60 @@ int main() {
       }
     }
 
+    async function runScaffold() {
+      const logs = document.getElementById('logs');
+      logs.style.color = '#22c55e';
+      logs.textContent = '⚡ Generazione scaffold in corso...';
+      try {
+        const res = await fetch('/api/scaffold?platform=' + encodeURIComponent(activePlatform));
+        const data = await res.json();
+        if (data.error) {
+          logs.style.color = '#f87171';
+          logs.textContent = '✗ ' + data.error;
+          return;
+        }
+        const fileList = Object.keys(data.files).join(', ');
+        logs.textContent = '✓ Scaffold reale generato: ' + fileList + '\\n\\n' + data.notes +
+          '\\n\\nScaricare i file qui sotto e lanciare "make" con devkitPro reale installato.';
+        // Offerta di download reale via Blob, un file alla volta.
+        Object.entries(data.files).forEach(([name, content]) => {
+          const blob = new Blob([content], { type: 'text/plain' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = name.replace(/\\//g, '_');
+          a.textContent = '⬇ ' + name;
+          a.style.cssText = 'display:block;color:var(--accent);margin-top:6px;font-family:monospace;font-size:12px;';
+          logs.appendChild(document.createElement('br'));
+          logs.appendChild(a);
+        });
+      } catch (e) {
+        logs.style.color = '#f87171';
+        logs.textContent = 'Error: ' + e.message;
+      }
+    }
+
+    async function loadToolchainStatus() {
+      const panel = document.getElementById('toolchain-status');
+      try {
+        const res = await fetch('/api/toolchains');
+        const data = await res.json();
+        panel.innerHTML = '';
+        Object.entries(data).forEach(([plat, info]) => {
+          const row = document.createElement('div');
+          row.className = 'mem-row';
+          const ok = info.detected;
+          row.innerHTML = '<span>' + plat.toUpperCase() + '</span><span class="val" style="color:' +
+            (ok ? '#22c55e' : '#f87171') + '">' + (ok ? '✓ ' + info.path : '✗ non installato') + '</span>';
+          panel.appendChild(row);
+        });
+      } catch (e) {
+        panel.textContent = 'Errore nel leggere lo stato toolchain: ' + e.message;
+      }
+    }
+
     updateMeta();
+    loadToolchainStatus();
   </script>
 </body>
 </html>
@@ -438,6 +496,21 @@ const server = Bun.serve({
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
       }
+    }
+
+    // 3. Toolchain status API — mostra, piattaforma per piattaforma, quali
+    // toolchain reali sono installati SU QUESTA macchina in questo momento.
+    if (url.pathname === "/api/toolchains" && req.method === "GET") {
+      return new Response(JSON.stringify(pipeline.detectToolchains()), { headers });
+    }
+
+    // 4. Scaffold API — genera un vero Makefile devkitPro + main.c per far
+    // partire un progetto homebrew reale multi-file col sistema di build
+    // standard, invece del solo compilatore one-shot di questo studio.
+    if (url.pathname === "/api/scaffold" && req.method === "GET") {
+      const platform = url.searchParams.get("platform") as any;
+      const result = pipeline.scaffoldProject(platform);
+      return new Response(JSON.stringify(result), { headers });
     }
 
     return new Response("Not Found", { status: 404 });

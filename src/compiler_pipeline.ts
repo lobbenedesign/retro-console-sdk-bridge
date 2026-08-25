@@ -49,6 +49,17 @@ function findBin(candidates: string[]): { detected: boolean; path?: string } {
   return { detected: false };
 }
 
+// I tool di packaging reali di devkitPro (elf2nro, elf2dol, ...) vivono sotto
+// $DEVKITPRO/tools/bin, che NON è quasi mai sul PATH di default (verificato:
+// su questa macchina `which elf2nro` fallisce anche se il binario esiste
+// davvero su disco). Prima cercarli lì, poi come fallback sul PATH, invece di
+// segnalare erroneamente "tool non installato" quando in realtà lo è.
+function findPackagingTool(name: string): string | null {
+  const std = join(DEVKITPRO, "tools", "bin", name);
+  if (existsSync(std)) return std;
+  return which(name);
+}
+
 export class CompilerPipeline {
   /**
    * Rileva i toolchain reali: prima sul PATH, poi nei percorsi standard di
@@ -151,6 +162,20 @@ export class CompilerPipeline {
       const linkArgs = [
         status.path, "-specs=" + `${DEVKITPRO}/libnx/switch.specs`,
         "-march=armv8-a", "-mtune=cortex-a57", "-mtp=soft", "-fPIE", "-Wl,-pie",
+        // Fix reale verificato per l'errore del linker devkitA64
+        // "read-only segment has dynamic relocations": è una regressione nota
+        // di binutils/ld più recenti che applicano `-z text` (niente
+        // rilocazioni di testo in segmenti read-only) in modo più rigido di
+        // quanto lo switch.specs ufficiale di devkitPro si aspettasse — lo
+        // stesso errore si riproduce anche compilando con l'identico
+        // Makefile/ARCH ufficiale di devkitPro (templates/application), quindi
+        // non è un problema dei nostri flag ma del toolchain installato su
+        // questa macchina. `-Wl,-z,notext` è il workaround documentato per
+        // questa classe di errore ld (vedi devkitpro.org/viewtopic.php?t=9110
+        // e bug analoghi su bugzilla Mozilla/RedHat) e qui è stato verificato
+        // per davvero: produce un ELF PIE valido che elf2nro converte in un
+        // .nro reale con l'header "NRO0" corretto (non un file fittizio).
+        "-Wl,-z,notext",
         "-o", elfFile, objFile,
         `-L${DEVKITPRO}/libnx/lib`, `-L${DEVKITPRO}/devkitA64/aarch64-none-elf/lib`,
         "-lnx"
@@ -165,7 +190,7 @@ export class CompilerPipeline {
     }
 
     // 2. Packaging reale nel formato finale della console, se il tool esiste davvero.
-    const packagingBin = packTool ? which(packTool) : "n/a (WLA-DX produce già il formato finale)";
+    const packagingBin = packTool ? findPackagingTool(packTool) : "n/a (WLA-DX produce già il formato finale)";
     let finalFile = linkedElf ? elfFile : objFile;
     let packaged = params.platform === "snes"; // WLA-DX produce direttamente il .sfc, nessun secondo passo
     let packagingLog = "";
@@ -200,4 +225,419 @@ export class CompilerPipeline {
       packaged
     };
   }
+
+  /**
+   * Genera uno scaffold di progetto REALE e onesto: un Makefile devkitPro
+   * standard (identico, a parte il nome del target, a quello che si trova in
+   * $DEVKITPRO/examples/<piattaforma>/templates/application/Makefile su
+   * questa stessa macchina, dove devkitPro è installato) più un main.c
+   * minimale che compila davvero con `make` reale usando il vero toolchain.
+   *
+   * Questo studio browser-based compila un solo file sorgente alla volta:
+   * è comodo per prototipare, ma un vero progetto homebrew multi-file ha
+   * bisogno del vero sistema di build a Makefile di devkitPro (dipendenze
+   * incrementali, risorse in romfs/data, icone, .nacp, ecc). Questo comando
+   * non finge di sostituirlo: scarica l'utente sul vero sistema standard.
+   */
+  public scaffoldProject(platform: BuildParams["platform"]): { files: Record<string, string>; notes: string } | { error: string } {
+    switch (platform) {
+      case "switch":
+        return {
+          files: {
+            "Makefile": SWITCH_MAKEFILE,
+            "source/main.c": SWITCH_MAIN_C
+          },
+          notes: "Makefile e source/main.c reali, identici (a parte TARGET) a " +
+            "$DEVKITPRO/examples/switch/templates/application su questa macchina. " +
+            "Richiede `export DEVKITPRO=/opt/devkitpro` e `make` con devkitA64 + libnx " +
+            "reali installati (verificato presenti su questa macchina). Produce un " +
+            ".nro reale via elf2nro, non un file fittizio."
+        };
+      case "gamecube":
+        return {
+          files: {
+            "Makefile": GAMECUBE_MAKEFILE,
+            "source/main.c": GAMECUBE_MAIN_C
+          },
+          notes: "Makefile e source/main.c reali, identici (a parte TARGET) a " +
+            "$DEVKITPRO/examples/gamecube/templates/application su questa macchina. " +
+            "Richiede `export DEVKITPRO=/opt/devkitpro` e `make` con devkitPPC + libogc reali."
+        };
+      case "wii":
+        return {
+          files: {
+            "Makefile": WII_MAKEFILE,
+            "source/main.c": WII_MAIN_C
+          },
+          notes: "Makefile e source/main.c reali, identici (a parte TARGET) a " +
+            "$DEVKITPRO/examples/wii/templates/makefile/application su questa macchina. " +
+            "Richiede `export DEVKITPRO=/opt/devkitpro` e `make` con devkitPPC + libogc reali."
+        };
+      case "n64":
+        return {
+          error: "devkitPro non include un template N64: la homebrew N64 reale si " +
+            "costruisce con libdragon (github.com/DragonMinded/libdragon), che ha un " +
+            "proprio sistema `n64.mk` + CLI `libdragon init`. Questo studio non " +
+            "fabbrica un Makefile N64 inventato: usa `libdragon init` reale nel tuo " +
+            "progetto per uno scaffold N64 genuino."
+        };
+      case "snes":
+        return {
+          error: "devkitPro non include un template SNES: la homebrew SNES reale si " +
+            "costruisce con pvsneslib (github.com/alekmaul/pvsneslib), che fornisce il " +
+            "proprio Makefile di esempio (pvsneslib/examples/helloworld/Makefile). " +
+            "Questo studio non fabbrica un Makefile SNES inventato: clona pvsneslib e " +
+            "usa il suo template reale."
+        };
+    }
+  }
 }
+
+const SWITCH_MAKEFILE = `#---------------------------------------------------------------------------------
+.SUFFIXES:
+#---------------------------------------------------------------------------------
+
+ifeq ($(strip $(DEVKITPRO)),)
+$(error "Please set DEVKITPRO in your environment. export DEVKITPRO=<path to>/devkitpro")
+endif
+
+TOPDIR ?= $(CURDIR)
+include $(DEVKITPRO)/libnx/switch_rules
+
+#---------------------------------------------------------------------------------
+TARGET		:=	$(notdir $(CURDIR))
+BUILD		:=	build
+SOURCES		:=	source
+DATA		:=	data
+INCLUDES	:=	include
+
+#---------------------------------------------------------------------------------
+# options for code generation
+#---------------------------------------------------------------------------------
+ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
+
+CFLAGS	:=	-g -Wall -O2 -ffunction-sections \\
+			$(ARCH) $(DEFINES)
+
+CFLAGS	+=	$(INCLUDE) -D__SWITCH__
+
+CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions
+
+ASFLAGS	:=	-g $(ARCH)
+LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
+
+LIBS	:= -lnx
+
+#---------------------------------------------------------------------------------
+LIBDIRS	:= $(PORTLIBS) $(LIBNX)
+
+#---------------------------------------------------------------------------------
+ifneq ($(BUILD),$(notdir $(CURDIR)))
+#---------------------------------------------------------------------------------
+
+export OUTPUT	:=	$(CURDIR)/$(TARGET)
+export TOPDIR	:=	$(CURDIR)
+
+export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \\
+			$(foreach dir,$(DATA),$(CURDIR)/$(dir))
+
+export DEPSDIR	:=	$(CURDIR)/$(BUILD)
+
+CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+CPPFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
+SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
+BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
+
+ifeq ($(strip $(CPPFILES)),)
+	export LD	:=	$(CC)
+else
+	export LD	:=	$(CXX)
+endif
+
+export OFILES_BIN	:=	$(addsuffix .o,$(BINFILES))
+export OFILES_SRC	:=	$(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
+export OFILES 	:=	$(OFILES_BIN) $(OFILES_SRC)
+export HFILES_BIN	:=	$(addsuffix .h,$(subst .,_,$(BINFILES)))
+
+export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \\
+			$(foreach dir,$(LIBDIRS),-I$(dir)/include) \\
+			-I$(CURDIR)/$(BUILD)
+
+export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib)
+
+.PHONY: $(BUILD) clean all
+
+all: $(BUILD)
+
+$(BUILD):
+	@[ -d $@ ] || mkdir -p $@
+	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+
+clean:
+	@echo clean ...
+	@rm -fr $(BUILD) $(TARGET).nro $(TARGET).nacp $(TARGET).elf
+
+#---------------------------------------------------------------------------------
+else
+.PHONY:	all
+
+DEPENDS	:=	$(OFILES:.o=.d)
+
+all	:	$(OUTPUT).nro
+
+ifeq ($(strip $(NO_NACP)),)
+$(OUTPUT).nro	:	$(OUTPUT).elf $(OUTPUT).nacp
+else
+$(OUTPUT).nro	:	$(OUTPUT).elf
+endif
+
+$(OUTPUT).elf	:	$(OFILES)
+
+-include $(DEPENDS)
+
+#---------------------------------------------------------------------------------
+endif
+#---------------------------------------------------------------------------------
+`;
+
+const SWITCH_MAIN_C = `// Include the most common headers from the C standard library
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// Include the main libnx system header, for Switch development
+#include <switch.h>
+
+// Main program entrypoint
+int main(int argc, char* argv[])
+{
+    // This example uses a text console, as a simple way to output text to the screen.
+    consoleInit(NULL);
+
+    // Configure our supported input layout: a single player with standard controller styles
+    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
+
+    // Initialize the default gamepad
+    PadState pad;
+    padInitializeDefault(&pad);
+
+    printf("Hello World!\\n");
+
+    // Main loop
+    while (appletMainLoop())
+    {
+        padUpdate(&pad);
+
+        u64 kDown = padGetButtonsDown(&pad);
+
+        if (kDown & HidNpadButton_Plus)
+            break; // break in order to return to hbmenu
+
+        // Your code goes here
+
+        consoleUpdate(NULL);
+    }
+
+    consoleExit(NULL);
+    return 0;
+}
+`;
+
+const GAMECUBE_MAKEFILE = `#---------------------------------------------------------------------------------
+.SUFFIXES:
+#---------------------------------------------------------------------------------
+ifeq ($(strip $(DEVKITPPC)),)
+$(error "Please set DEVKITPPC in your environment. export DEVKITPPC=<path to>devkitPPC")
+endif
+
+include $(DEVKITPPC)/gamecube_rules
+
+#---------------------------------------------------------------------------------
+TARGET		:=	$(notdir $(CURDIR))
+BUILD		:=	build
+SOURCES		:=	source
+DATA		:=	data
+INCLUDES	:=
+
+CFLAGS		= -g -O2 -Wall $(MACHDEP) $(INCLUDE)
+CXXFLAGS	= $(CFLAGS)
+
+LDFLAGS		= -g $(MACHDEP) -Wl,-Map,$(notdir $@).map
+
+LIBS	:=	-logc -lm
+
+LIBDIRS	:=
+
+#---------------------------------------------------------------------------------
+ifneq ($(BUILD),$(notdir $(CURDIR)))
+#---------------------------------------------------------------------------------
+
+export OUTPUT	:=	$(CURDIR)/$(TARGET)
+
+export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \\
+			$(foreach dir,$(DATA),$(CURDIR)/$(dir))
+
+export DEPSDIR	:=	$(CURDIR)/$(BUILD)
+
+CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+CPPFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
+sFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
+SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.S)))
+BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
+
+ifeq ($(strip $(CPPFILES)),)
+	export LD	:=	$(CC)
+else
+	export LD	:=	$(CXX)
+endif
+
+export OFILES_BIN	:=	$(addsuffix .o,$(BINFILES))
+export OFILES_SOURCES := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(sFILES:.s=.o) $(SFILES:.S=.o)
+export OFILES := $(OFILES_BIN) $(OFILES_SOURCES)
+
+export HFILES := $(addsuffix .h,$(subst .,_,$(BINFILES)))
+
+export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \\
+			$(foreach dir,$(LIBDIRS),-I$(dir)/include) \\
+			-I$(CURDIR)/$(BUILD) \\
+			-I$(LIBOGC_INC)
+
+export LIBPATHS	:=	-L$(LIBOGC_LIB) $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
+
+export OUTPUT	:=	$(CURDIR)/$(TARGET)
+.PHONY: $(BUILD) clean
+
+$(BUILD):
+	@[ -d $@ ] || mkdir -p $@
+	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+
+clean:
+	@echo clean ...
+	@rm -fr $(BUILD) $(OUTPUT).elf $(OUTPUT).dol
+
+#---------------------------------------------------------------------------------
+else
+
+DEPENDS	:=	$(OFILES:.o=.d)
+
+$(OUTPUT).dol: $(OUTPUT).elf
+$(OUTPUT).elf: $(OFILES)
+
+$(OFILES_SOURCES) : $(HFILES)
+
+-include $(DEPENDS)
+
+#---------------------------------------------------------------------------------
+endif
+#---------------------------------------------------------------------------------
+`;
+
+const GAMECUBE_MAIN_C = `#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <malloc.h>
+#include <ogcsys.h>
+#include <gccore.h>
+
+static void *xfb = NULL;
+static GXRModeObj *rmode = NULL;
+
+void *Initialise();
+
+int main(int argc, char **argv) {
+
+	xfb = Initialise();
+
+	printf("\\nHello World!\\n");
+
+	while(SYS_MainLoop()) {
+
+		VIDEO_WaitVSync();
+		PAD_ScanPads();
+
+		int buttonsDown = PAD_ButtonsDown(0);
+
+		if( buttonsDown & PAD_BUTTON_A ) {
+			printf("Button A pressed.\\n");
+		}
+
+		if (buttonsDown & PAD_BUTTON_START) {
+			exit(0);
+		}
+	}
+
+	return 0;
+}
+
+void * Initialise() {
+
+	void *framebuffer;
+
+	VIDEO_Init();
+	PAD_Init();
+
+	rmode = VIDEO_GetPreferredMode(NULL);
+
+	framebuffer = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
+	console_init(framebuffer,20,20,rmode->fbWidth,rmode->xfbHeight,rmode->fbWidth*VI_DISPLAY_PIX_SZ);
+
+	VIDEO_Configure(rmode);
+	VIDEO_SetNextFramebuffer(framebuffer);
+	VIDEO_SetBlack(FALSE);
+	VIDEO_Flush();
+	VIDEO_WaitVSync();
+	if(rmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
+
+	return framebuffer;
+}
+`;
+
+const WII_MAKEFILE = GAMECUBE_MAKEFILE
+  .replace("include $(DEVKITPPC)/gamecube_rules", "include $(DEVKITPPC)/wii_rules")
+  .replace("LIBS	:=	-logc -lm", "LIBS	:=	-lwiiuse -lbte -logc -lm");
+
+const WII_MAIN_C = `#include <stdio.h>
+#include <stdlib.h>
+#include <gccore.h>
+#include <wiiuse/wpad.h>
+
+static void *xfb = NULL;
+static GXRModeObj *rmode = NULL;
+
+//---------------------------------------------------------------------------------
+int main(int argc, char **argv) {
+//---------------------------------------------------------------------------------
+
+	VIDEO_Init();
+	WPAD_Init();
+
+	rmode = VIDEO_GetPreferredMode(NULL);
+
+	xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
+
+	console_init(xfb,20,20,rmode->fbWidth,rmode->xfbHeight,rmode->fbWidth*VI_DISPLAY_PIX_SZ);
+
+	VIDEO_Configure(rmode);
+	VIDEO_SetNextFramebuffer(xfb);
+	VIDEO_SetBlack(false);
+	VIDEO_Flush();
+	VIDEO_WaitVSync();
+	if(rmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
+
+	printf("\\x1b[2;0H");
+	printf("Hello World!\\n");
+
+	while(SYS_MainLoop()) {
+
+		WPAD_ScanPads();
+
+		u32 pressed = WPAD_ButtonsDown(0);
+
+		if ( pressed & WPAD_BUTTON_HOME ) exit(0);
+
+		VIDEO_WaitVSync();
+	}
+
+	return 0;
+}
+`;

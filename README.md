@@ -100,6 +100,59 @@ studio, senza toccare `nintendo_hal.h`, che restava già corretto).
 | N64 | non installato su questa macchina | — | — |
 | SNES (WLA-DX) | non installato su questa macchina | — | — |
 
+### 4. Patcher di ROM reale (IPS/BPS) con dichiarazione d'uso onesta
+
+Aggiunta la possibilità di applicare una patch di modding/traduzione fan
+(formati **IPS** e **BPS**, gli standard reali usati dalla community di ROM
+hacking — vedi [Floating IPS](https://github.com/Alcaro/Flips) e la
+specifica "beat" di byuu) a una ROM fornita dall'utente dal proprio disco.
+**Nessuna ROM viene mai scaricata, ospitata o distribuita da questo
+strumento**: patch e ROM base sono entrambe fornite localmente dal client, i
+byte risultanti vengono restituiti al client e mai salvati permanentemente
+lato server.
+
+**Nota onesta sulla "certificazione"**: non esiste alcun modo tecnico per uno
+strumento locale di verificare se un utente possiede davvero una copia
+autentica del gioco — nessuna API, nessun database, nessun controllo
+possibile. Definirlo "certificato" sarebbe fabbricare una garanzia
+inesistente, lo stesso tipo di claim già rimosso da altri progetti di questo
+autore. Quello che è stato implementato realmente è un **gate di
+dichiarazione**: l'utente deve ridigitare o incollare per intero (non
+spuntare una semplice checkbox) un testo di dichiarazione di responsabilità,
+che viene registrato su disco (`data/rom_patch_declarations.jsonl`, mai
+committato — vedi `.gitignore`) con nome, timestamp reale e testo esatto, e
+firmato con un token HMAC-SHA256 reale e verificabile richiesto per ogni
+applicazione di patch. Prova solo che il passaggio è stato completato, non
+la proprietà legale del gioco.
+
+**Formati implementati e verificati**:
+- **IPS**: header `PATCH`, record `offset(3B)+size(2B)+dati`, record RLE
+  (`size=0` → run-length+valore), record di troncamento finale opzionale.
+  Testato con patch reali costruite a mano: sostituzione byte puntuale e RLE,
+  entrambe verificate byte-per-byte sull'output.
+- **BPS**: header `BPS1`, interi a lunghezza variabile, 4 modalità di azione
+  (SourceRead/TargetRead/SourceCopy/TargetCopy) e **verifica CRC32 reale**
+  dei checksum sorgente/destinazione dichiarati nella patch contro quelli
+  calcolati sui byte reali — se la ROM fornita non è quella corretta per la
+  patch, `sourceCrcMatched:false` lo segnala esplicitamente invece di
+  produrre silenziosamente un output corrotto. Testato con un encoder BPS
+  scritto per il solo scopo di verifica round-trip (spec-compliant), inclusi
+  i casi SourceRead/TargetRead/TargetCopy(RLE) e il rilevamento di ROM
+  sorgente sbagliata.
+- CRC32 calcolato con un'implementazione reale del polinomio IEEE 802.3
+  standard (tabella a 256 entry), non un placeholder.
+
+**API**: `GET /api/patcher/declaration-text`, `POST /api/patcher/acknowledge`
+(`{fullName, statement}` → token reale), `POST /api/patcher/apply`
+(`{fullName, token, romBase64, patchBase64}` → richiede un token valido,
+altrimenti `403` esplicito).
+
+**Bug reale trovato e corretto durante la verifica**: il token generato
+concatenava `declarationId.acceptedAt.signature` con `.` come separatore, ma
+`acceptedAt` è un timestamp ISO che contiene già un punto (`...836Z`),
+rompendo lo split lato verifica. Corretto usando `|` come separatore, e
+riverificato l'intero flusso end-to-end via richieste HTTP reali dopo il fix.
+
 ## Avvio
 
 ```bash
@@ -120,6 +173,11 @@ istruzioni di installazione reali invece di un falso successo.
 - `GET /api/scaffold?platform=switch|wii|gamecube|n64|snes` — Makefile +
   sorgente reali per iniziare un progetto vero col sistema di build standard
   (o un errore onesto per N64/SNES, che non hanno template devkitPro).
+- `GET /api/patcher/declaration-text` — testo reale della dichiarazione richiesta.
+- `POST /api/patcher/acknowledge` — `{ fullName, statement }` → registra la
+  dichiarazione e ritorna un token HMAC reale.
+- `POST /api/patcher/apply` — `{ fullName, token, romBase64, patchBase64 }` →
+  applica realmente una patch IPS/BPS, richiede un token valido.
 
 ## Licenza
 MIT.

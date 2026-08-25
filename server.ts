@@ -8,6 +8,8 @@
  */
 
 import { CompilerPipeline } from "./src/compiler_pipeline";
+import { applyPatch, detectPatchFormat } from "./src/rom_patcher";
+import { REQUIRED_DECLARATION_TEXT, recordDeclaration, verifyToken } from "./src/rom_declaration";
 import { join } from "path";
 import { existsSync, writeFileSync } from "fs";
 
@@ -302,6 +304,40 @@ int main() {
         <!-- Dynamically populated memory map -->
       </div>
     </div>
+
+    <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
+      <h2>🩹 Patcher di ROM reale (IPS / BPS)</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-top:-4px;">
+        Applica una patch (solo differenze byte-a-byte, mai contenuto protetto) a una ROM che fornisci tu dal tuo disco.
+        Nessuna ROM viene scaricata, ospitata o distribuita da questo strumento — tutto avviene in locale.
+      </p>
+
+      <div id="declaration-gate">
+        <h2 style="margin-top:16px;">1. Dichiarazione d'uso (richiesta)</h2>
+        <p style="font-size:11.5px; color:#f87171; margin-bottom:8px;">
+          Nota onesta: nessuno strumento locale può verificare realmente se possiedi una copia autentica del gioco.
+          Questo passaggio registra una dichiarazione da te firmata (non una semplice checkbox), non una prova legale di possesso.
+        </p>
+        <div class="console-logs" id="declaration-text" style="color:#e5e7eb; height:auto; max-height:120px;"></div>
+        <label class="meta-item" style="display:block; margin-top:10px;">Nome e cognome:</label>
+        <input type="text" id="decl-name" placeholder="Mario Rossi" style="width:100%; padding:8px; margin-bottom:8px; background:#05060b; border:1px solid var(--border); border-radius:6px; color:#fff;" />
+        <label class="meta-item" style="display:block;">Ridigita o incolla esattamente il testo sopra:</label>
+        <textarea id="decl-statement" rows="3" style="width:100%; background:#05060b; border:1px solid var(--border); border-radius:6px; color:#fff; padding:8px; font-size:12px;"></textarea>
+        <button class="btn-action btn-compile" style="margin-top:10px;" onclick="acceptDeclaration()">Registra dichiarazione</button>
+        <div id="decl-status" style="margin-top:8px; font-size:12px;"></div>
+      </div>
+
+      <div id="patch-section" style="display:none; margin-top:20px;">
+        <h2>2. File (solo locali, mai caricati altrove che su questo server)</h2>
+        <label class="meta-item" style="display:block;">ROM base (tua, originale):</label>
+        <input type="file" id="rom-file" style="margin-bottom:10px;" />
+        <label class="meta-item" style="display:block;">File patch (.ips o .bps):</label>
+        <input type="file" id="patch-file" style="margin-bottom:10px;" />
+        <button class="btn-action btn-compile" onclick="applyRomPatch()">Applica patch reale</button>
+        <div class="console-logs" id="patch-log" style="margin-top:10px;">In attesa...</div>
+        <div id="patch-download"></div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -460,6 +496,125 @@ int main() {
 
     updateMeta();
     loadToolchainStatus();
+
+    // --- Patcher di ROM reale ---
+    let declarationToken = null;
+    let declarationName = null;
+
+    async function loadDeclarationText() {
+      try {
+        const res = await fetch('/api/patcher/declaration-text');
+        const data = await res.json();
+        document.getElementById('declaration-text').textContent = data.text;
+      } catch (e) {
+        document.getElementById('declaration-text').textContent = 'Errore nel caricare la dichiarazione: ' + e.message;
+      }
+    }
+    loadDeclarationText();
+
+    async function acceptDeclaration() {
+      const fullName = document.getElementById('decl-name').value;
+      const statement = document.getElementById('decl-statement').value;
+      const statusEl = document.getElementById('decl-status');
+      statusEl.style.color = '#9ca3af';
+      statusEl.textContent = 'Registrazione in corso...';
+      try {
+        const res = await fetch('/api/patcher/acknowledge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fullName, statement })
+        });
+        const data = await res.json();
+        if (data.error) {
+          statusEl.style.color = '#f87171';
+          statusEl.textContent = '✗ ' + data.error;
+          return;
+        }
+        declarationToken = data.token;
+        declarationName = fullName;
+        statusEl.style.color = '#22c55e';
+        statusEl.textContent = '✓ Dichiarazione registrata (id: ' + data.declarationId.slice(0, 8) + '…). Puoi ora procedere.';
+        document.getElementById('patch-section').style.display = 'block';
+      } catch (e) {
+        statusEl.style.color = '#f87171';
+        statusEl.textContent = 'Errore: ' + e.message;
+      }
+    }
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function applyRomPatch() {
+      const log = document.getElementById('patch-log');
+      const downloadDiv = document.getElementById('patch-download');
+      downloadDiv.innerHTML = '';
+      const romInput = document.getElementById('rom-file');
+      const patchInput = document.getElementById('patch-file');
+
+      if (!romInput.files[0] || !patchInput.files[0]) {
+        log.style.color = '#f87171';
+        log.textContent = 'Seleziona sia la ROM base che il file patch.';
+        return;
+      }
+      if (!declarationToken) {
+        log.style.color = '#f87171';
+        log.textContent = 'Completa prima la dichiarazione.';
+        return;
+      }
+
+      log.style.color = '#9ca3af';
+      log.textContent = '⚡ Applicazione patch reale in corso (byte-a-byte, in locale)...';
+
+      try {
+        const [romBase64, patchBase64] = await Promise.all([
+          fileToBase64(romInput.files[0]),
+          fileToBase64(patchInput.files[0])
+        ]);
+
+        const res = await fetch('/api/patcher/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fullName: declarationName, token: declarationToken, romBase64, patchBase64 })
+        });
+        const data = await res.json();
+        if (data.error) {
+          log.style.color = '#f87171';
+          log.textContent = '✗ ' + data.error;
+          return;
+        }
+
+        let checksumInfo = 'CRC32 sorgente reale: ' + data.sourceCrc32 + ' · CRC32 risultato reale: ' + data.targetCrc32;
+        if (data.format === 'BPS') {
+          checksumInfo += '\\nCRC32 sorgente atteso dalla patch: ' + data.expectedSourceCrc32 +
+            (data.sourceCrcMatched ? ' ✓ combacia' : ' ✗ NON combacia (la ROM fornita potrebbe non essere quella corretta per questa patch)');
+        }
+
+        log.style.color = data.sourceCrcMatched === false ? '#facc15' : '#22c55e';
+        log.textContent = '✓ Patch ' + data.format + ' applicata realmente (' + data.patchesApplied + ' record). ' +
+          data.inputSizeBytes + ' -> ' + data.outputSizeBytes + ' byte.\\n' + checksumInfo;
+
+        const bin = atob(data.outputBase64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const blob = new Blob([bytes], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = romInput.files[0].name.replace(/(\\.[^.]+)$/, '_patched$1');
+        a.textContent = '⬇ Scarica ROM patchata (' + (data.outputSizeBytes / 1024).toFixed(1) + ' KB)';
+        a.style.cssText = 'display:block;color:var(--accent);margin-top:8px;font-family:monospace;font-size:12px;';
+        downloadDiv.appendChild(a);
+      } catch (e) {
+        log.style.color = '#f87171';
+        log.textContent = 'Errore: ' + e.message;
+      }
+    }
   </script>
 </body>
 </html>
@@ -511,6 +666,64 @@ const server = Bun.serve({
       const platform = url.searchParams.get("platform") as any;
       const result = pipeline.scaffoldProject(platform);
       return new Response(JSON.stringify(result), { headers });
+    }
+
+    // 5. Testo reale della dichiarazione richiesta prima di usare il patcher ROM.
+    if (url.pathname === "/api/patcher/declaration-text" && req.method === "GET") {
+      return new Response(JSON.stringify({ text: REQUIRED_DECLARATION_TEXT }), { headers });
+    }
+
+    // 6. Registra realmente la dichiarazione (mai una semplice checkbox non
+    // verificata): l'utente deve ridigitare/incollare il testo esatto. Logga
+    // su disco (data/rom_patch_declarations.jsonl) e ritorna un token HMAC
+    // reale verificabile. NOTA ONESTA: questo prova solo che l'utente ha
+    // completato il passaggio di dichiarazione, non che possiede davvero il
+    // gioco — nessuno strumento locale può verificarlo realmente.
+    if (url.pathname === "/api/patcher/acknowledge" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const { token, declarationId } = recordDeclaration(body.fullName, body.statement);
+        return new Response(JSON.stringify({ success: true, token, declarationId }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 7. Applica realmente una patch IPS/BPS a una ROM fornita dal client
+    // (entrambe come base64 nel body, mai scaricate da questo server). Il
+    // token di dichiarazione è richiesto e verificato realmente (HMAC), non
+    // solo controllato "truthy". Nessuna ROM viene salvata su disco dal
+    // server: i byte vengono processati in memoria e ritornati al client.
+    if (url.pathname === "/api/patcher/apply" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const { fullName, token, romBase64, patchBase64 } = body;
+
+        if (!verifyToken(token, fullName)) {
+          return new Response(JSON.stringify({
+            error: "Dichiarazione non valida o mancante. Completa prima la dichiarazione tramite /api/patcher/acknowledge."
+          }), { status: 403, headers });
+        }
+        if (!romBase64 || !patchBase64) {
+          return new Response(JSON.stringify({ error: "romBase64 e patchBase64 sono richiesti." }), { status: 400, headers });
+        }
+
+        const source = new Uint8Array(Buffer.from(romBase64, "base64"));
+        const patch = new Uint8Array(Buffer.from(patchBase64, "base64"));
+        const format = detectPatchFormat(patch);
+        if (!format) {
+          return new Response(JSON.stringify({ error: "Formato patch non riconosciuto (atteso IPS o BPS)." }), { status: 400, headers });
+        }
+
+        const result = applyPatch(source, patch);
+        return new Response(JSON.stringify({
+          ...result,
+          outputBase64: Buffer.from(result.outputBytes).toString("base64"),
+          outputBytes: undefined // non serializzare il typed array grezzo nel JSON
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
     }
 
     return new Response("Not Found", { status: 404 });

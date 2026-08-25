@@ -10,6 +10,9 @@
 import { CompilerPipeline } from "./src/compiler_pipeline";
 import { applyPatch, detectPatchFormat } from "./src/rom_patcher";
 import { REQUIRED_DECLARATION_TEXT, recordDeclaration, verifyToken } from "./src/rom_declaration";
+import { isMio0, mio0Decompress, mio0CompressForTesting } from "./src/n64_mio0";
+import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
+import { parseN64RomHeader } from "./src/n64_rom_header";
 import { join } from "path";
 import { existsSync, writeFileSync } from "fs";
 
@@ -338,6 +341,36 @@ int main() {
         <div id="patch-download"></div>
       </div>
     </div>
+
+    <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
+      <h2>🧾 Inspector header ROM N64 (formato hardware generico)</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-top:-4px;">
+        Legge i primi 64 byte di una ROM N64 secondo il formato hardware documentato pubblicamente
+        (identico su qualsiasi cartuccia/homebrew N64, richiesto dal bootloader reale della console).
+      </p>
+      <input type="file" id="hdr-file" style="margin-bottom:8px;" />
+      <button class="btn-action btn-compile" onclick="inspectRomHeader()">Leggi header reale</button>
+      <div class="console-logs" id="hdr-log" style="margin-top:10px; height:auto; max-height:200px;">In attesa...</div>
+    </div>
+
+    <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
+      <h2>🗺️ Editor level-script SM64 (sperimentale, basato su documentazione pubblica)</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-top:-4px;">
+        Formato basato sulla documentazione pubblica della community (Hack64 Wiki, progetto n64decomp/sm64).
+        Incolla qui SOLO un segmento di byte già estratto da TE dalla tua ROM (facoltativamente compresso MIO0) —
+        questo server non apre né analizza mai una ROM completa.
+      </p>
+      <label class="meta-item" style="display:block;">Byte del segmento (hex, es. "24 1F 00 09 ..." oppure file):</label>
+      <input type="file" id="ls-file" style="margin-bottom:6px;" />
+      <textarea id="ls-hex" rows="3" placeholder="Oppure incolla qui i byte in esadecimale, separati da spazi" style="width:100%; background:#05060b; border:1px solid var(--border); border-radius:6px; color:#fff; padding:8px; font-size:12px;"></textarea>
+      <label style="display:flex; align-items:center; gap:6px; margin-top:8px; font-size:12.5px;">
+        <input type="checkbox" id="ls-mio0" /> Decomprimi come MIO0 prima di interpretare i comandi
+      </label>
+      <button class="btn-action btn-compile" style="margin-top:10px;" onclick="parseLevelScriptUI()">Interpreta comandi</button>
+      <div class="console-logs" id="ls-log" style="margin-top:10px;">In attesa...</div>
+      <div id="ls-table" style="margin-top:10px;"></div>
+      <button class="btn-action" style="display:none; margin-top:10px; background:#141929;color:#fff;border:1px solid var(--border);" id="ls-save-btn" onclick="saveLevelScriptUI()">Applica modifiche e scarica</button>
+    </div>
   </div>
 
   <script>
@@ -615,6 +648,168 @@ int main() {
         log.textContent = 'Errore: ' + e.message;
       }
     }
+
+    // --- Inspector header ROM N64 ---
+    async function inspectRomHeader() {
+      const log = document.getElementById('hdr-log');
+      const fileInput = document.getElementById('hdr-file');
+      if (!fileInput.files[0]) { log.style.color = '#f87171'; log.textContent = 'Seleziona un file ROM.'; return; }
+      log.style.color = '#9ca3af';
+      log.textContent = '⚡ Lettura header reale in corso...';
+      try {
+        const buf = await fileInput.files[0].slice(0, 0x40).arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        const res = await fetch('/api/n64/rom-header', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bytesBase64: btoa(bin) })
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+
+        log.style.color = data.looksLikeValidN64Rom ? '#22c55e' : '#facc15';
+        log.textContent =
+          (data.looksLikeValidN64Rom ? '✓ Magic ROM N64 reale riconosciuto (80 37 12 40)' : '⚠ Magic non riconosciuto: potrebbe non essere una ROM N64 big-endian standard') +
+          '\\n\\nTitolo immagine: ' + (data.imageName || '(vuoto)') +
+          '\\nCartridge ID: ' + data.cartridgeId +
+          '\\nRegione: ' + data.countryName + ' (0x' + data.countryCode.toString(16) + ')' +
+          '\\nVersione: ' + data.version +
+          '\\nBoot address: ' + data.bootAddress +
+          '\\nCRC1 (memorizzato in header): ' + data.crc1 +
+          '\\nCRC2 (memorizzato in header): ' + data.crc2 +
+          '\\nManufacturer: ' + data.manufacturerId;
+      } catch (e) {
+        log.style.color = '#f87171';
+        log.textContent = 'Errore: ' + e.message;
+      }
+    }
+
+    // --- Editor level-script SM64 ---
+    let lsCommands = null;
+
+    function bytesToBase64(bytes) {
+      let bin = '';
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin);
+    }
+    function base64ToBytes(b64) {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return bytes;
+    }
+    function hexToBytes(hex) {
+      const clean = hex.trim().replace(/0x/gi, '').replace(/[^0-9a-fA-F]/g, '');
+      const bytes = new Uint8Array(clean.length / 2);
+      for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+      return bytes;
+    }
+
+    async function getInputBytes() {
+      const fileInput = document.getElementById('ls-file');
+      if (fileInput.files[0]) {
+        const buf = await fileInput.files[0].arrayBuffer();
+        return new Uint8Array(buf);
+      }
+      const hex = document.getElementById('ls-hex').value;
+      if (hex.trim()) return hexToBytes(hex);
+      return null;
+    }
+
+    async function parseLevelScriptUI() {
+      const log = document.getElementById('ls-log');
+      const tableDiv = document.getElementById('ls-table');
+      const saveBtn = document.getElementById('ls-save-btn');
+      tableDiv.innerHTML = '';
+      saveBtn.style.display = 'none';
+
+      let bytes = await getInputBytes();
+      if (!bytes || bytes.length === 0) {
+        log.style.color = '#f87171';
+        log.textContent = 'Fornisci un file o dei byte esadecimali.';
+        return;
+      }
+
+      try {
+        if (document.getElementById('ls-mio0').checked) {
+          log.textContent = '⚡ Decompressione MIO0 reale in corso...';
+          const res = await fetch('/api/n64/mio0/decompress', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dataBase64: bytesToBase64(bytes) })
+          });
+          const data = await res.json();
+          if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+          bytes = base64ToBytes(data.decompressedBase64);
+          log.textContent = '✓ MIO0 decompresso: ' + data.decompressedSize + ' byte reali.';
+        }
+
+        const res = await fetch('/api/sm64/levelscript/parse', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bytesBase64: bytesToBase64(bytes) })
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+
+        lsCommands = data.commands;
+        log.style.color = '#22c55e';
+        log.textContent = '✓ ' + data.commands.length + ' comandi reali interpretati.' +
+          (data.truncatedAt !== null ? ' Interrotto onestamente all\\'offset ' + data.truncatedAt + ' (opcode non mappato in questo editor, nessun disallineamento silenzioso).' : '');
+
+        let html = '<table style="width:100%; font-size:11.5px; border-collapse:collapse;">' +
+          '<tr style="color:var(--text-muted); text-align:left;"><th>Offset</th><th>Comando</th><th>Campi</th></tr>';
+        data.commands.forEach((cmd, idx) => {
+          html += '<tr style="border-top:1px solid var(--border);"><td>0x' + cmd.offset.toString(16) + '</td><td>' + cmd.name + '</td><td>';
+          const fieldNames = Object.keys(cmd.fields);
+          if (fieldNames.length === 0) {
+            html += '<span style="color:var(--text-muted);">(non editabile in questo tool)</span>';
+          } else {
+            fieldNames.forEach(fn => {
+              html += fn + ': <input type="number" data-cmd="' + idx + '" data-field="' + fn + '" value="' + cmd.fields[fn] + '" style="width:70px; background:#05060b; border:1px solid var(--border); color:#fff; border-radius:4px; margin:2px;" onchange="updateLsField(this)" /> ';
+            });
+          }
+          html += '</td></tr>';
+        });
+        html += '</table>';
+        tableDiv.innerHTML = html;
+        saveBtn.style.display = data.commands.some(c => Object.keys(c.fields).length > 0) ? 'block' : 'none';
+      } catch (e) {
+        log.style.color = '#f87171';
+        log.textContent = 'Errore: ' + e.message;
+      }
+    }
+
+    function updateLsField(input) {
+      const cmdIdx = Number(input.dataset.cmd);
+      const field = input.dataset.field;
+      lsCommands[cmdIdx].fields[field] = Number(input.value);
+    }
+
+    async function saveLevelScriptUI() {
+      const log = document.getElementById('ls-log');
+      try {
+        const res = await fetch('/api/sm64/levelscript/serialize', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ commands: lsCommands })
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+
+        const bytes = base64ToBytes(data.bytesBase64);
+        const blob = new Blob([bytes], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'levelscript_edited.bin';
+        a.textContent = '⬇ Scarica segmento modificato (' + data.size + ' byte)';
+        a.style.cssText = 'display:block;color:var(--accent);margin-top:8px;font-family:monospace;font-size:12px;';
+        document.getElementById('ls-table').appendChild(a);
+        log.style.color = '#22c55e';
+        log.textContent = '✓ Comandi riserializzati realmente in ' + data.size + ' byte.';
+      } catch (e) {
+        log.style.color = '#f87171';
+        log.textContent = 'Errore: ' + e.message;
+      }
+    }
   </script>
 </body>
 </html>
@@ -723,6 +918,74 @@ const server = Bun.serve({
         }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
+    }
+
+    // 8. MIO0 — decompressione reale di un blocco fornito dal client
+    // (formato di compressione N64 generico, non specifico di un gioco).
+    if (url.pathname === "/api/n64/mio0/decompress" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const data = new Uint8Array(Buffer.from(body.dataBase64 || "", "base64"));
+        if (!isMio0(data)) return new Response(JSON.stringify({ error: "Il blocco fornito non ha il magic 'MIO0'." }), { status: 400, headers });
+        const out = mio0Decompress(data);
+        return new Response(JSON.stringify({ decompressedBase64: Buffer.from(out).toString("base64"), decompressedSize: out.length }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
+    }
+
+    // 9. MIO0 — ricompressione reale (greedy, non size-ottimale ma corretta
+    // e verificata via round-trip) dei byte modificati dal client.
+    if (url.pathname === "/api/n64/mio0/compress" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const data = new Uint8Array(Buffer.from(body.dataBase64 || "", "base64"));
+        const out = mio0CompressForTesting(data);
+        return new Response(JSON.stringify({ compressedBase64: Buffer.from(out).toString("base64"), compressedSize: out.length }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
+    }
+
+    // 10. Level-script SM64 — parsing reale secondo il formato pubblicamente
+    // documentato dalla community (vedi src/sm64_level_script.ts). Opera sui
+    // byte forniti dal client, mai su una ROM aperta da questo server.
+    if (url.pathname === "/api/sm64/levelscript/parse" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const bytes = new Uint8Array(Buffer.from(body.bytesBase64 || "", "base64"));
+        const { commands, truncatedAt } = parseLevelScript(bytes);
+        return new Response(JSON.stringify({ commands, truncatedAt, editableCommandNames: EDITABLE_COMMAND_NAMES }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
+    }
+
+    // 11. Level-script SM64 — riserializzazione reale dei comandi (con
+    // eventuali campi modificati dal client) in un nuovo buffer di byte.
+    if (url.pathname === "/api/sm64/levelscript/serialize" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const commands: LevelCommand[] = body.commands || [];
+        const out = serializeLevelScript(commands);
+        return new Response(JSON.stringify({ bytesBase64: Buffer.from(out).toString("base64"), size: out.length }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
+    }
+
+    // 12. Inspector header ROM N64 — formato hardware generico (funziona su
+    // QUALSIASI ROM N64, non specifico di un gioco). Il client invia solo i
+    // primi 64 byte (o l'intera ROM, ma solo l'header viene letto qui).
+    if (url.pathname === "/api/n64/rom-header" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const bytes = new Uint8Array(Buffer.from(body.bytesBase64 || "", "base64"));
+        const header = parseN64RomHeader(bytes);
+        return new Response(JSON.stringify(header), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
       }
     }
 

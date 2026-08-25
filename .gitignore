@@ -2,3 +2,24 @@ node_modules/
 data/
 *.log
 .DS_Store
+
+# ROM/immagini di gioco reali: mai versionate in questo repository, per
+# nessun motivo. Questo strumento opera solo su file forniti localmente
+# dall'utente a runtime, non li ospita né li distribuisce mai.
+*.z64
+*.n64
+*.v64
+*.sfc
+*.smc
+*.nes
+*.gba
+*.gb
+*.gbc
+*.nds
+*.iso
+*.wbfs
+*.rvz
+*.zip
+*.7z
+*.rar
+Super Mario*

@@ -153,6 +153,35 @@ concatenava `declarationId.acceptedAt.signature` con `.` come separatore, ma
 rompendo lo split lato verifica. Corretto usando `|` come separatore, e
 riverificato l'intero flusso end-to-end via richieste HTTP reali dopo il fix.
 
+### 5. Inspector header ROM N64 + editor level-script SM64 (sperimentale)
+
+Due strumenti aggiuntivi, basati **solo su documentazione pubblica** della
+community di reverse engineering, mai su analisi diretta di una ROM
+specifica da parte di questo assistente durante lo sviluppo:
+
+- **Inspector header ROM N64** (`src/n64_rom_header.ts`) — formato hardware
+  **generico**, identico su qualunque ROM N64 (non specifico di un gioco):
+  titolo, cartridge ID, regione, versione, boot address, CRC memorizzati.
+  Offset incrociati da due fonti pubbliche indipendenti (ultra64.ca memory
+  map + N64Brew Wiki). Testato con header sintetici costruiti a mano.
+- **Decompressore/compressore MIO0** (`src/n64_mio0.ts`) — formato di
+  compressione LZ77-style **generico** N64 (non specifico di SM64, usato da
+  vari titoli dell'epoca). Testato con un vero round-trip
+  compressione→decompressione su dati sintetici.
+- **Editor level-script SM64** (`src/sm64_level_script.ts`, sperimentale) —
+  parser/editor dei comandi di script di livello secondo il formato
+  **pubblicamente documentato** dalla community (Hack64 Wiki, progetto di
+  decompilazione open source n64decomp/sm64). Permette di modificare
+  posizione/rotazione di oggetti piazzati (`PLACE_OBJECT`) e il punto di
+  spawn di Mario (`SET_MARIO_START_POS`) su un segmento di byte che
+  **l'utente estrae ed fornisce da sé** dalla propria ROM — questo server
+  non apre, analizza o processa mai una ROM completa, solo il segmento di
+  byte esplicitamente incollato/caricato dal client. Comandi con opcode non
+  mappato in questo editor interrompono onestamente il parsing invece di
+  disallinearsi silenziosamente. Testato con sequenze di comandi costruite a
+  mano secondo la specifica pubblica (place-object, mario-spawn,
+  end-of-script), incluso il rilevamento di opcode sconosciuti.
+
 ## Avvio
 
 ```bash
@@ -178,6 +207,14 @@ istruzioni di installazione reali invece di un falso successo.
   dichiarazione e ritorna un token HMAC reale.
 - `POST /api/patcher/apply` — `{ fullName, token, romBase64, patchBase64 }` →
   applica realmente una patch IPS/BPS, richiede un token valido.
+- `POST /api/n64/rom-header` — `{ bytesBase64 }` (primi 64 byte) → header
+  ROM N64 reale interpretato.
+- `POST /api/n64/mio0/decompress` / `POST /api/n64/mio0/compress` —
+  `{ dataBase64 }` → (de)compressione MIO0 reale.
+- `POST /api/sm64/levelscript/parse` — `{ bytesBase64 }` → comandi
+  level-script reali interpretati.
+- `POST /api/sm64/levelscript/serialize` — `{ commands }` → byte reali
+  riserializzati dopo eventuali modifiche ai campi.
 
 ## Licenza
 MIT.

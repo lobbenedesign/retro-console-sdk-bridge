@@ -391,7 +391,8 @@ int main() {
         });
         const data = await res.json();
         logs.textContent = data.logs;
-        document.getElementById('meta-size').textContent = (data.elfSize / 1024).toFixed(2) + ' KB';
+        logs.style.color = data.success ? '#22c55e' : '#f87171';
+        document.getElementById('meta-size').textContent = data.success ? (data.elfSize / 1024).toFixed(2) + ' KB' : '— (nessun binario reale)';
       } catch (e) {
         logs.textContent = 'Error: ' + e.message;
       }

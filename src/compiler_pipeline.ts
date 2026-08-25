@@ -1,5 +1,4 @@
 import { existsSync, writeFileSync, readFileSync } from "fs";
-import { execSync } from "child_process";
 import { join } from "path";
 
 export interface ToolchainStatus {
@@ -22,140 +21,183 @@ export interface BuildResult {
   outputBinaryBase64?: string;
   logs: string;
   compilerUsed: string;
-  simulated: boolean;
+  packaged: boolean; // true solo se il tool di packaging reale (elf2nro/elf2dol/n64tool) ha prodotto il formato finale reale
+  installHint?: string;
+}
+
+// devkitPro è il toolchain reale, open-source e gratuito per homebrew su console
+// Nintendo (github.com/devkitPro). Rileva sia i binari sul PATH sia l'installazione
+// standard sotto $DEVKITPRO, invece di indovinare nomi di comando generici.
+const DEVKITPRO = process.env.DEVKITPRO || "/opt/devkitpro";
+
+function which(cmd: string): string | null {
+  try {
+    const proc = Bun.spawnSync(["which", cmd]);
+    const out = new TextDecoder().decode(proc.stdout).trim();
+    return proc.exitCode === 0 && out ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+function findBin(candidates: string[]): { detected: boolean; path?: string } {
+  for (const c of candidates) {
+    if (existsSync(c)) return { detected: true, path: c };
+    const w = which(c);
+    if (w) return { detected: true, path: w };
+  }
+  return { detected: false };
 }
 
 export class CompilerPipeline {
   /**
-   * Scans system PATH for native devkitPro or GCC toolchains
+   * Rileva i toolchain reali: prima sul PATH, poi nei percorsi standard di
+   * installazione devkitPro ($DEVKITPRO/devkitA64, devkitPPC, ecc). Nessun
+   * finto "detected: true": se il binario non esiste su disco, è false.
    */
   public detectToolchains(): ToolchainStatus {
-    const checkCmd = (cmd: string): { detected: boolean; path?: string } => {
-      try {
-        const out = execSync(`which ${cmd} 2>/dev/null`).toString().trim();
-        return { detected: true, path: out };
-      } catch {
-        return { detected: false };
-      }
-    };
-
     return {
-      snes: { compiler: "wla-dx / wla-65816", ...checkCmd("wla-dx") },
-      n64: { compiler: "mips64-elf-gcc", ...checkCmd("mips64-elf-gcc") },
-      gamecube: { compiler: "powerpc-eabi-gcc", ...checkCmd("powerpc-eabi-gcc") },
-      wii: { compiler: "powerpc-eabi-gcc", ...checkCmd("powerpc-eabi-gcc") },
-      switch: { compiler: "aarch64-none-elf-gcc", ...checkCmd("aarch64-none-elf-gcc") }
+      snes: { compiler: "wla-65816 (WLA-DX)", ...findBin(["wla-65816"]) },
+      n64: { compiler: "mips64-elf-gcc (n64chain / libdragon toolchain)", ...findBin(["mips64-elf-gcc", `${DEVKITPRO}/../n64chain/bin/mips64-elf-gcc`]) },
+      gamecube: { compiler: "powerpc-eabi-gcc (devkitPPC)", ...findBin(["powerpc-eabi-gcc", `${DEVKITPRO}/devkitPPC/bin/powerpc-eabi-gcc`]) },
+      wii: { compiler: "powerpc-eabi-gcc (devkitPPC)", ...findBin(["powerpc-eabi-gcc", `${DEVKITPRO}/devkitPPC/bin/powerpc-eabi-gcc`]) },
+      switch: { compiler: "aarch64-none-elf-gcc (devkitA64)", ...findBin(["aarch64-none-elf-gcc", `${DEVKITPRO}/devkitA64/bin/aarch64-none-elf-gcc`]) }
     };
   }
 
+  private packagingTool(platform: BuildParams["platform"]): { tool: string; ext: string } {
+    switch (platform) {
+      case "switch": return { tool: "elf2nro", ext: ".nro" };
+      case "wii": case "gamecube": return { tool: "elf2dol", ext: ".dol" };
+      case "n64": return { tool: "n64tool", ext: ".z64" };
+      case "snes": return { tool: "", ext: ".sfc" }; // WLA-DX produce già il .sfc direttamente
+    }
+  }
+
+  private installInstructions(platform: BuildParams["platform"]): string {
+    const base = "devkitPro è il toolchain reale gratuito per homebrew Nintendo (github.com/devkitPro/pacman): installa devkitPro pacman, poi esegui";
+    switch (platform) {
+      case "switch": return `${base} 'sudo dkp-pacman -S switch-dev' per ottenere aarch64-none-elf-gcc + libnx.`;
+      case "wii": case "gamecube": return `${base} 'sudo dkp-pacman -S wii-dev' (o gamecube-dev) per ottenere powerpc-eabi-gcc + libogc.`;
+      case "n64": return `Installa un toolchain N64 reale come libdragon (github.com/DragonMinded/libdragon) o n64chain per ottenere mips64-elf-gcc.`;
+      case "snes": return `Installa WLA-DX (github.com/vhelin/wla-dx) per ottenere l'assembler wla-65816 reale.`;
+    }
+  }
+
   /**
-   * Compiles code using local compiler toolchain, or generates optimized ROM binary via simulator
+   * Compila con un vero cross-compiler se disponibile. Se il toolchain o il
+   * tool di packaging finale non sono installati, ritorna SEMPRE
+   * success:false con istruzioni reali — mai un binario o un log fabbricato
+   * che finga una compilazione riuscita.
    */
   public async compile(params: BuildParams): Promise<BuildResult> {
     const toolchains = this.detectToolchains();
     const status = toolchains[params.platform];
-    const tempDir = "/tmp";
-    const sourceFile = join(tempDir, `nintendo_game_${Date.now()}.c`);
-    const elfFile = join(tempDir, `nintendo_game_${Date.now()}.elf`);
+    const { tool: packTool, ext } = this.packagingTool(params.platform);
 
+    if (!status.detected || !status.path) {
+      return {
+        success: false,
+        elfSize: 0,
+        outputBinaryName: "",
+        logs: `✗ Toolchain reale non trovato: '${status.compiler}' non è installato su questa macchina (verificato sia sul PATH sia nei percorsi standard $DEVKITPRO).\n` +
+          `Nessun binario è stato generato: questo studio non fabbrica mai un finto ROM "riuscito" quando il compilatore reale manca.\n` +
+          `${this.installInstructions(params.platform)}`,
+        compilerUsed: status.compiler,
+        packaged: false,
+        installHint: this.installInstructions(params.platform)
+      };
+    }
+
+    const tempDir = "/tmp";
+    const stamp = Date.now();
+    const sourceFile = join(tempDir, `nintendo_game_${stamp}.c`);
+    const objFile = join(tempDir, `nintendo_game_${stamp}.o`);
+    const elfFile = join(tempDir, `nintendo_game_${stamp}.elf`);
     writeFileSync(sourceFile, params.sourceCode);
 
-    // If local cross-compiler is detected on the machine, run a REAL native compile
-    if (status.detected && status.path) {
-      try {
-        let compileArgs = [];
-        let formatTool = "";
-        let finalExt = "";
+    const archFlags: Record<BuildParams["platform"], string[]> = {
+      switch: ["-march=armv8-a", "-mtune=cortex-a57", "-mtp=soft", "-fPIE"],
+      wii: ["-mhard-float"],
+      gamecube: ["-mhard-float"],
+      n64: ["-march=vr4300"],
+      snes: []
+    };
 
-        if (params.platform === "switch") {
-          compileArgs = [status.path, "-march=armv8-a", "-O2", "-c", sourceFile, "-o", elfFile];
-          formatTool = "elf2nro";
-          finalExt = ".nro";
-        } else if (params.platform === "wii" || params.platform === "gamecube") {
-          compileArgs = [status.path, "-mhard-float", "-O2", "-c", sourceFile, "-o", elfFile];
-          formatTool = "elf2dol";
-          finalExt = ".dol";
-        } else if (params.platform === "n64") {
-          compileArgs = [status.path, "-march=vr4300", "-O2", "-c", sourceFile, "-o", elfFile];
-          formatTool = "n64tool";
-          finalExt = ".z64";
-        }
+    // 1. Compilazione reale del sorgente C in un vero object file.
+    const compileArgs = [status.path, ...archFlags[params.platform], "-O2", "-c", sourceFile, "-o", objFile, `-I${join(import.meta.dir, "..", "include")}`];
+    if (params.platform === "switch") compileArgs.push(`-I${DEVKITPRO}/libnx/include`);
+    const proc = Bun.spawn(compileArgs, { stdout: "pipe", stderr: "pipe" });
+    const stderr = await new Response(proc.stderr).text();
+    const compileCode = await proc.exited;
 
-        if (compileArgs.length > 0) {
-          const proc = Bun.spawn(compileArgs);
-          await proc.exited;
-
-          if (existsSync(elfFile)) {
-            const binaryData = readFileSync(elfFile);
-            return {
-              success: true,
-              elfSize: binaryData.length,
-              outputBinaryName: `game_${params.platform}${finalExt}`,
-              outputBinaryBase64: binaryData.toString("base64"),
-              logs: `✓ Compiled successfully using native ${status.compiler}\n✓ Output target verified.`,
-              compilerUsed: status.compiler,
-              simulated: false
-            };
-          }
-        }
-      } catch (e: any) {
-        return {
-          success: false,
-          elfSize: 0,
-          outputBinaryName: "",
-          logs: `✗ Native Compilation Error: ${e.message}`,
-          compilerUsed: status.compiler,
-          simulated: false
-        };
-      }
+    if (compileCode !== 0 || !existsSync(objFile)) {
+      return {
+        success: false,
+        elfSize: 0,
+        outputBinaryName: "",
+        logs: `✗ Compilazione reale fallita con ${status.compiler}:\n${stderr.slice(-1500)}`,
+        compilerUsed: status.compiler,
+        packaged: false
+      };
     }
 
-    // Fallback: Highly optimized ROM emulator compiler (produces valid platform container bytes)
-    const logs = `[Nintendo SDK Toolchain Bridge]\n` +
-      `* Cross-Compiler '${status.compiler}' not detected in system PATH.\n` +
-      `* Switching to High-Fidelity Retro-Container Generator...\n` +
-      `✓ AST analysis: OK\n` +
-      `✓ Linking nintendo_hal.h abstractions: OK\n` +
-      `✓ Emulated Target: ${params.platform.toUpperCase()}\n` +
-      `✓ Packaging ROM file structure...`;
+    let linkLog = "";
+    let linkedElf = false;
 
-    // Generate valid mock binary container format with correct ROM headers
-    const emulatedROM = this.generateROMBytes(params.platform);
+    // 1b. Per Switch, link reale contro libnx (switch.specs reale di devkitPro)
+    // per produrre un ELF eseguibile vero, non solo un object file isolato.
+    if (params.platform === "switch" && existsSync(`${DEVKITPRO}/libnx/switch.specs`)) {
+      const linkArgs = [
+        status.path, "-specs=" + `${DEVKITPRO}/libnx/switch.specs`,
+        "-march=armv8-a", "-mtune=cortex-a57", "-mtp=soft", "-fPIE", "-Wl,-pie",
+        "-o", elfFile, objFile,
+        `-L${DEVKITPRO}/libnx/lib`, `-L${DEVKITPRO}/devkitA64/aarch64-none-elf/lib`,
+        "-lnx"
+      ];
+      const linkProc = Bun.spawn(linkArgs, { stdout: "pipe", stderr: "pipe", env: { ...process.env, DEVKITPRO } });
+      const linkErr = await new Response(linkProc.stderr).text();
+      const linkCode = await linkProc.exited;
+      linkedElf = linkCode === 0 && existsSync(elfFile);
+      linkLog = linkedElf
+        ? `✓ Link reale contro libnx (switch.specs): OK`
+        : `⚠ Compilazione a object file riuscita, ma il link reale contro libnx è fallito: ${linkErr.slice(-500)}`;
+    }
 
+    // 2. Packaging reale nel formato finale della console, se il tool esiste davvero.
+    const packagingBin = packTool ? which(packTool) : "n/a (WLA-DX produce già il formato finale)";
+    let finalFile = linkedElf ? elfFile : objFile;
+    let packaged = params.platform === "snes"; // WLA-DX produce direttamente il .sfc, nessun secondo passo
+    let packagingLog = "";
+
+    if (packTool && packagingBin && linkedElf) {
+      const outFile = join(tempDir, `nintendo_game_${stamp}${ext}`);
+      const packProc = Bun.spawn([packagingBin, elfFile, outFile], { stdout: "pipe", stderr: "pipe" });
+      const packErr = await new Response(packProc.stderr).text();
+      const packCode = await packProc.exited;
+      if (packCode === 0 && existsSync(outFile)) {
+        finalFile = outFile;
+        packaged = true;
+        packagingLog = `✓ Packaging reale con ${packTool}: OK`;
+      } else {
+        packagingLog = `⚠ Link riuscito, ma il packaging con ${packTool} è fallito: ${packErr.slice(-500)}\nViene restituito l'ELF linkato grezzo, NON un ${ext} funzionante.`;
+      }
+    } else if (packTool && !linkedElf) {
+      packagingLog = `⚠ Nessun ELF linkato disponibile: viene restituito l'object file grezzo (.o), NON un ${ext} funzionante.`;
+    } else if (packTool && !packagingBin) {
+      packagingLog = `⚠ Il tool di packaging '${packTool}' non è installato: viene restituito l'ELF grezzo, NON un ${ext} funzionante.`;
+    }
+    packagingLog = [linkLog, packagingLog].filter(Boolean).join("\n");
+
+    const binaryData = readFileSync(finalFile);
     return {
       success: true,
-      elfSize: emulatedROM.length,
-      outputBinaryName: `game_${params.platform}.${params.platform === "switch" ? "nro" : params.platform === "n64" ? "z64" : params.platform === "snes" ? "sfc" : "dol"}`,
-      outputBinaryBase64: emulatedROM.toString("base64"),
-      logs,
-      compilerUsed: `${status.compiler} (High-Fidelity Packaging Engine)`,
-      simulated: true
+      elfSize: binaryData.length,
+      outputBinaryName: `game_${params.platform}${packaged ? ext : linkedElf ? ".elf" : ".o"}`,
+      outputBinaryBase64: binaryData.toString("base64"),
+      logs: `✓ Compilato realmente con ${status.compiler} (${status.path})\n${packagingLog}`,
+      compilerUsed: status.compiler,
+      packaged
     };
-  }
-
-  /**
-   * Returns a byte array containing valid target header signatures (e.g. N64 z64 magic, Switch NRO magic)
-   */
-  private generateROMBytes(platform: string): Buffer {
-    const size = 1024 * 16; // 16KB header container
-    const buffer = Buffer.alloc(size);
-
-    if (platform === "n64") {
-      // N64 magic header: 0x80371240
-      buffer.writeUInt32BE(0x80371240, 0);
-      buffer.write("N64 UNIVERSAL GAME", 0x20);
-    } else if (platform === "switch") {
-      // Switch NRO magic: 'NRO0' at 0x10
-      buffer.write("NRO0", 0x10);
-      buffer.write("SWITCH APP", 0x40);
-    } else if (platform === "snes") {
-      // SNES header at 0x7FC0
-      buffer.write("SNES GAME", 0x7FC0);
-      buffer.writeUInt16LE(0x1234, 0x7FDC); // checksum
-    } else {
-      // GameCube/Wii DOL header
-      buffer.write("DOL1", 0x0);
-    }
-    return buffer;
   }
 }

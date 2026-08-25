@@ -1,7 +1,7 @@
 {
-  "name": "nintendo-universal-sdk",
-  "version": "1.0.0",
-  "description": "Unified Cross-Platform SDK Studio for Nintendo Retro & Modern Consoles (SNES, N64, GameCube, Wii, Switch)",
+  "name": "retro-console-sdk-bridge",
+  "version": "1.2.0",
+  "description": "Unofficial cross-platform build bridge for homebrew retro/modern console development (SNES, N64, GameCube, Wii, Switch) via real open-source toolchains (devkitPro, WLA-DX). Not affiliated with or endorsed by Nintendo.",
   "main": "server.ts",
   "scripts": {
     "start": "bun server.ts"

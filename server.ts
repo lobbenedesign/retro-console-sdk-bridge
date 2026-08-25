@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 /**
- * 🎮 NINTENDO UNIVERSAL SDK STUDIO (v1.0.0)
+ * 🎮 RETRO CONSOLE SDK BRIDGE (v1.2.0)
+ * Progetto indipendente e non ufficiale, non affiliato né approvato da Nintendo.
+ * Wrapper HAL sopra toolchain open-source reali (devkitPro, WLA-DX) per
+ * homebrew su console Nintendo Switch/Wii/GameCube/N64/SNES.
  * Core compilation server, toolchain bridge, and retro console simulator.
  */
 
@@ -16,13 +19,13 @@ const HTML_DASHBOARD = `
 <html lang="it">
 <head>
   <meta charset="UTF-8">
-  <title>Nintendo Universal SDK Studio</title>
+  <title>Retro Console SDK Bridge</title>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;700;900&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-base: #07080e;
       --bg-card: #0e111d;
-      --primary: #e60012; /* Nintendo Red */
+      --primary: #7c3aed; /* neutrale, non associato al branding Nintendo */
       --accent: #00c6ff;
       --border: #1e2538;
       --text: #f3f4f6;
@@ -230,9 +233,9 @@ const HTML_DASHBOARD = `
   <header>
     <div class="brand">
       <div class="brand-logo"></div>
-      <h1>Nintendo Universal SDK Studio</h1>
+      <h1>Retro Console SDK Bridge</h1>
     </div>
-    <div class="badge">v1.0.0-PRO</div>
+    <div class="badge">v1.2.0 — non ufficiale, non affiliato a Nintendo</div>
   </header>
 
   <div class="container">
@@ -442,6 +445,6 @@ const server = Bun.serve({
 });
 
 console.log(`\n======================================================`);
-console.log(`🎮 NINTENDO UNIVERSAL SDK running on http://localhost:${PORT}`);
+console.log(`🎮 Retro Console SDK Bridge (non ufficiale, non affiliato a Nintendo) — http://localhost:${PORT}`);
 console.log(`🚀 Unified target compiles: SNES, N64, GameCube, Wii, Switch`);
 console.log(`======================================================\n`);

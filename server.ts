@@ -30,7 +30,7 @@ const HTML_DASHBOARD = `
       --border: #1e2538;
       --text: #f3f4f6;
       --text-muted: #9ca3af;
-      --glow: rgba(230, 0, 18, 0.4);
+      --glow: rgba(124, 58, 237, 0.4);
     }
     body {
       background-color: var(--bg-base);
@@ -125,10 +125,10 @@ const HTML_DASHBOARD = `
       color: #fff;
     }
     .platform-btn.active {
-      background: linear-gradient(135deg, var(--primary), #b3000e);
+      background: linear-gradient(135deg, var(--primary), #5b21b6);
       border-color: var(--primary);
       color: #fff;
-      box-shadow: 0 4px 12px rgba(230,0,18,0.3);
+      box-shadow: 0 4px 12px rgba(124,58,237,0.3);
     }
     .badge {
       font-size: 10px;

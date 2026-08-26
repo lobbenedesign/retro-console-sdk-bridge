@@ -202,6 +202,37 @@ blob di byte della texture (mai una ROM intera); la preview è disegnata
 lato client su un `<canvas>` reale via `ImageData`, senza bisogno di un
 encoder PNG lato server.
 
+### 7. Correzioni post-ROADMAP: offset header reale + cross-check MIO0
+
+Seguendo le priorità indicate in `ROADMAP.md`:
+
+- **Bug reale corretto nell'header ROM N64**: il campo letto a offset 0x38
+  come "manufacturerId" non era mai stato cross-verificato con una seconda
+  fonte indipendente sull'offset esatto (il test sintetico dell'epoca
+  "passava" solo perché costruiva i dati di prova con lo stesso offset
+  sbagliato — bug autoconsistente, stesso pattern del bug 0x27 del
+  level-script). Verificato ora contro due fonti indipendenti (ricerca
+  pubblica + il codice sorgente reale `libdragon/tools/n64tool.c`, che
+  definisce `CATEGORY_OFFSET 0x3B` con default `'N'`): il byte reale è a
+  offset **0x3B**, non 0x38, e rappresenta il formato cartuccia
+  ('N'=cart standard, 'D'=64DD, 'C'=cart+expansion, 'E'=64DD expansion,
+  'Z'=Aleck64). Campo rinominato `cartridgeFormat`.
+- **Cross-check del codec MIO0**: confrontata riga per riga la nostra
+  implementazione con il codice sorgente reale `libmio0.c`
+  (queueRAM/sm64tools, MIT, riferimento noto e usato in produzione dalla
+  community di ROM hacking N64). **Nessuna discrepanza trovata**: stessi
+  offset header, stesso ordine bit MSB-first, stessa identica formula
+  lunghezza/distanza. Nessun codice copiato, solo verifica della formula.
+- **Onestamente non implementato**: i campi dell'"Advanced Homebrew ROM
+  Header" (savetype, configurazione controller/pak) menzionati da
+  n64brew.dev/wiki e usati da EverDrive64/libdragon esistono davvero, ma
+  durante la ricerca non è stato possibile trovare una specifica pubblica
+  con gli offset byte esatti cross-verificata da almeno due fonti
+  indipendenti (solo descrizioni qualitative dei campi, non il loro
+  layout preciso). Non implementato per evitare di inventare offset non
+  verificati — da riprendere se si trova la specifica esatta (es.
+  ispezionando `ed64romconfig.c` di libdragon direttamente).
+
 ## Avvio
 
 ```bash

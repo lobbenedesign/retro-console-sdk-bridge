@@ -761,7 +761,7 @@ int main() {
           '\\nBoot address: ' + data.bootAddress +
           '\\nCRC1 (memorizzato in header): ' + data.crc1 +
           '\\nCRC2 (memorizzato in header): ' + data.crc2 +
-          '\\nManufacturer: ' + data.manufacturerId;
+          '\\nFormato cartuccia (0x3B): ' + data.cartridgeFormat + " (N=cart standard, D=64DD, C=cart+exp, E=64DD exp, Z=Aleck64)";
       } catch (e) {
         log.style.color = '#f87171';
         log.textContent = 'Errore: ' + e.message;

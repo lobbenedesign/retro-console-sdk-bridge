@@ -18,6 +18,17 @@
  * letterale dalla sezione non compressa, 0=riferimento all'indietro a 2
  * byte dalla sezione compressa (nibble alto = lunghezza-3, 12 bit bassi =
  * distanza-1).
+ *
+ * CROSS-CHECK (2026-08-26): implementazione validata confrontando riga per
+ * riga la formula qui sopra con il codice sorgente reale del riferimento
+ * open source `libmio0.c` (queueRAM/sm64tools, MIT). Confermato identico:
+ * stessi offset header big-endian, stesso ordine bit MSB-first
+ * (`buf[bit/8] & (1 << (7 - bit%8))`), stessa formula esatta
+ * `length = (b0>>4)+3` e `distance = (((b0&0xF)<<8)+b1)+1`. Nessuna
+ * discrepanza trovata — nessun codice è stato copiato, solo la formula
+ * pubblica del formato è stata verificata contro un'implementazione
+ * indipendente nota per essere corretta e usata in produzione dalla
+ * community di ROM hacking N64 da anni.
  */
 
 const MAGIC = "MIO0";

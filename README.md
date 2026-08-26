@@ -182,6 +182,26 @@ specifica da parte di questo assistente durante lo sviluppo:
   mano secondo la specifica pubblica (place-object, mario-spawn,
   end-of-script), incluso il rilevamento di opcode sconosciuti.
 
+### 6. Decoder texture N64 (formati hardware generici)
+
+Aggiunto `src/n64_texture.ts`: decodifica reale dei 9 formati texture RDP
+(RGBA16, RGBA32, IA16, IA8, IA4, I8, I4, CI4, CI8) — formati hardware
+**generici**, identici su qualsiasi ROM N64. Formule di estrazione canali
+verificate tramite ricerca dedicata (vedi `ROADMAP.md`) contro il
+comportamento del tool open source reale
+[Texture64](https://github.com/queueRAM/Texture64) (queueRAM), nessun
+codice copiato — solo le formule bit-level del formato hardware,
+reimplementate da zero.
+
+**Testato con valori noti costruiti a mano** per tutti e 9 i formati
+(es. RGBA16 `0xF8 0x01` → rosso puro `[255,0,0,255]`, IA4 nibble alto
+`1111` → `[255,255,255,255]`, CI4 con palette a 2 entry → colori corretti
+per indice), incluso il rifiuto onesto (`400`) quando i byte forniti sono
+insufficienti per le dimensioni dichiarate. Il client fornisce solo il
+blob di byte della texture (mai una ROM intera); la preview è disegnata
+lato client su un `<canvas>` reale via `ImageData`, senza bisogno di un
+encoder PNG lato server.
+
 ## Avvio
 
 ```bash
@@ -215,6 +235,8 @@ istruzioni di installazione reali invece di un falso successo.
   level-script reali interpretati.
 - `POST /api/sm64/levelscript/serialize` — `{ commands }` → byte reali
   riserializzati dopo eventuali modifiche ai campi.
+- `POST /api/n64/texture/decode` — `{ width, height, format, dataBase64,
+  paletteBase64? }` → `{ width, height, rgbaBase64 }` decodificati realmente.
 
 ## Licenza
 MIT.

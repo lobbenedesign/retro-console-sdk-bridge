@@ -13,6 +13,7 @@ import { REQUIRED_DECLARATION_TEXT, recordDeclaration, verifyToken } from "./src
 import { isMio0, mio0Decompress, mio0CompressForTesting } from "./src/n64_mio0";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
 import { parseN64RomHeader } from "./src/n64_rom_header";
+import { decodeN64Texture, requiredByteLength, BITS_PER_PIXEL, type N64TextureFormat } from "./src/n64_texture";
 import { join } from "path";
 import { existsSync, writeFileSync } from "fs";
 
@@ -354,6 +355,32 @@ int main() {
     </div>
 
     <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
+      <h2>🎨 Decoder texture N64 (formati hardware generici)</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-top:-4px;">
+        Formati RDP generici (RGBA16/32, IA16/8/4, I8/4, CI4/8), identici su qualsiasi ROM N64.
+        Fornisci un blob di byte texture già estratto da TE (mai una ROM intera).
+      </p>
+      <input type="file" id="tex-file" style="margin-bottom:6px;" />
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:8px;">
+        <label style="font-size:12px;">Larghezza <input type="number" id="tex-w" value="16" style="width:60px; background:#05060b; border:1px solid var(--border); color:#fff; border-radius:4px; padding:4px;" /></label>
+        <label style="font-size:12px;">Altezza <input type="number" id="tex-h" value="16" style="width:60px; background:#05060b; border:1px solid var(--border); color:#fff; border-radius:4px; padding:4px;" /></label>
+        <label style="font-size:12px;">Formato
+          <select id="tex-format" style="background:#05060b; border:1px solid var(--border); color:#fff; border-radius:4px; padding:4px;">
+            <option>RGBA16</option><option>RGBA32</option><option>IA16</option><option>IA8</option>
+            <option>IA4</option><option>I8</option><option>I4</option><option>CI4</option><option>CI8</option>
+          </select>
+        </label>
+      </div>
+      <div id="tex-palette-row" style="display:none; margin-bottom:8px;">
+        <label class="meta-item" style="display:block;">File palette (CI4/CI8, formato RGBA16):</label>
+        <input type="file" id="tex-palette-file" />
+      </div>
+      <button class="btn-action btn-compile" onclick="decodeTextureUI()">Decodifica e mostra</button>
+      <div class="console-logs" id="tex-log" style="margin-top:10px; height:auto;">In attesa...</div>
+      <canvas id="tex-canvas" style="margin-top:10px; image-rendering: pixelated; border:1px solid var(--border); max-width:256px;"></canvas>
+    </div>
+
+    <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
       <h2>🗺️ Editor level-script SM64 (sperimentale, basato su documentazione pubblica)</h2>
       <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-top:-4px;">
         Formato basato sulla documentazione pubblica della community (Hack64 Wiki, progetto n64decomp/sm64).
@@ -643,6 +670,63 @@ int main() {
         a.textContent = '⬇ Scarica ROM patchata (' + (data.outputSizeBytes / 1024).toFixed(1) + ' KB)';
         a.style.cssText = 'display:block;color:var(--accent);margin-top:8px;font-family:monospace;font-size:12px;';
         downloadDiv.appendChild(a);
+      } catch (e) {
+        log.style.color = '#f87171';
+        log.textContent = 'Errore: ' + e.message;
+      }
+    }
+
+    // --- Decoder texture N64 ---
+    document.getElementById('tex-format')?.addEventListener('change', (e) => {
+      const isIndexed = e.target.value === 'CI4' || e.target.value === 'CI8';
+      document.getElementById('tex-palette-row').style.display = isIndexed ? 'block' : 'none';
+    });
+
+    async function fileToBytes(file) {
+      const buf = await file.arrayBuffer();
+      return new Uint8Array(buf);
+    }
+    function bytesToB64(bytes) {
+      let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin);
+    }
+
+    async function decodeTextureUI() {
+      const log = document.getElementById('tex-log');
+      const fileInput = document.getElementById('tex-file');
+      if (!fileInput.files[0]) { log.style.color = '#f87171'; log.textContent = 'Seleziona un file con i byte della texture.'; return; }
+
+      const width = Number(document.getElementById('tex-w').value);
+      const height = Number(document.getElementById('tex-h').value);
+      const format = document.getElementById('tex-format').value;
+      log.style.color = '#9ca3af';
+      log.textContent = '⚡ Decodifica reale in corso...';
+
+      try {
+        const bytes = await fileToBytes(fileInput.files[0]);
+        const body = { width, height, format, dataBase64: bytesToB64(bytes) };
+
+        if (format === 'CI4' || format === 'CI8') {
+          const palFile = document.getElementById('tex-palette-file').files[0];
+          if (!palFile) { log.style.color = '#f87171'; log.textContent = 'Formato indicizzato: fornisci anche il file palette.'; return; }
+          body.paletteBase64 = bytesToB64(await fileToBytes(palFile));
+        }
+
+        const res = await fetch('/api/n64/texture/decode', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+
+        const canvas = document.getElementById('tex-canvas');
+        canvas.width = data.width; canvas.height = data.height;
+        const ctx = canvas.getContext('2d');
+        const rgbaBytes = base64ToBytes(data.rgbaBase64);
+        const imgData = new ImageData(new Uint8ClampedArray(rgbaBytes), data.width, data.height);
+        ctx.putImageData(imgData, 0, 0);
+
+        log.style.color = '#22c55e';
+        log.textContent = '✓ Texture reale decodificata (' + format + ', ' + data.width + 'x' + data.height + ').';
       } catch (e) {
         log.style.color = '#f87171';
         log.textContent = 'Errore: ' + e.message;
@@ -986,6 +1070,31 @@ const server = Bun.serve({
         return new Response(JSON.stringify(header), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 13. Decoder texture N64 reale — formati hardware generici (funzionano
+    // su QUALSIASI ROM N64). Il client fornisce solo il blob di byte della
+    // texture (mai una ROM intera) + dimensioni + formato (+ palette per CI4/CI8).
+    if (url.pathname === "/api/n64/texture/decode" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const width = Number(body.width);
+        const height = Number(body.height);
+        const format = body.format as N64TextureFormat;
+        if (!BITS_PER_PIXEL[format]) {
+          return new Response(JSON.stringify({ error: `Formato non riconosciuto: ${format}` }), { status: 400, headers });
+        }
+        const data = new Uint8Array(Buffer.from(body.dataBase64 || "", "base64"));
+        const expected = requiredByteLength(width, height, format);
+        if (data.length < expected) {
+          return new Response(JSON.stringify({ error: `Byte insufficienti per ${width}x${height} in formato ${format}: servono almeno ${expected} byte, forniti ${data.length}.` }), { status: 400, headers });
+        }
+        const palette = body.paletteBase64 ? new Uint8Array(Buffer.from(body.paletteBase64, "base64")) : undefined;
+        const tex = decodeN64Texture(data, width, height, format, palette);
+        return new Response(JSON.stringify({ width: tex.width, height: tex.height, rgbaBase64: Buffer.from(tex.rgba).toString("base64") }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
       }
     }
 

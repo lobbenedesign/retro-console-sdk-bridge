@@ -233,6 +233,30 @@ Seguendo le priorità indicate in `ROADMAP.md`:
   verificati — da riprendere se si trova la specifica esatta (es.
   ispezionando `ed64romconfig.c` di libdragon direttamente).
 
+### 8. Decompressore Yay0 (priorità #4 del ROADMAP)
+
+Aggiunto `src/n64_yay0.ts`: decompressore reale del formato Yay0, formato
+di compressione hardware generico imparentato a MIO0 (stessa famiglia,
+lunghezza massima di match estesa da 18 a 273 byte tramite un byte
+aggiuntivo quando il nibble di conteggio è zero), usato da vari titoli N64
+dell'epoca — non specifico di un singolo gioco.
+
+**Algoritmo trascritto fedelmente** (variabili tradotte, nessun codice
+copiato) dal riferimento pubblico open source reale
+[`ethteck/n64decompress`](https://github.com/ethteck/n64decompress)
+(`Yay0/decompress.py`), letto direttamente dal sorgente per garantire
+fedeltà bit-per-bit invece di una reinterpretazione approssimativa della
+documentazione qualitativa (che da sola non bastava a specificare
+l'esatta semantica off-by-one di offset/distanza).
+
+**Testato con dati sintetici costruiti a mano** secondo l'algoritmo
+verbatim: caso base (3 letterali + backreference RLE-style con overlap,
+count derivato dal nibble) e caso di lunghezza estesa (nibble conteggio
+zero → byte extra dalla sezione chunk, count = extra+18, verificato
+41 byte totali su un blocco costruito per restituire count=38). Verificato
+anche via richiesta HTTP end-to-end reale sul server. Solo decompressione:
+nessun encoder Yay0 disponibile in questa versione.
+
 ## Avvio
 
 ```bash
@@ -268,6 +292,7 @@ istruzioni di installazione reali invece di un falso successo.
   riserializzati dopo eventuali modifiche ai campi.
 - `POST /api/n64/texture/decode` — `{ width, height, format, dataBase64,
   paletteBase64? }` → `{ width, height, rgbaBase64 }` decodificati realmente.
+- `POST /api/n64/yay0/decompress` — `{ dataBase64 }` → decompressione Yay0 reale.
 
 ## Licenza
 MIT.

@@ -11,6 +11,7 @@ import { CompilerPipeline } from "./src/compiler_pipeline";
 import { applyPatch, detectPatchFormat } from "./src/rom_patcher";
 import { REQUIRED_DECLARATION_TEXT, recordDeclaration, verifyToken } from "./src/rom_declaration";
 import { isMio0, mio0Decompress, mio0CompressForTesting } from "./src/n64_mio0";
+import { isYay0, yay0Decompress } from "./src/n64_yay0";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
 import { parseN64RomHeader } from "./src/n64_rom_header";
 import { decodeN64Texture, requiredByteLength, BITS_PER_PIXEL, type N64TextureFormat } from "./src/n64_texture";
@@ -355,6 +356,18 @@ int main() {
     </div>
 
     <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
+      <h2>📦 Decompressore Yay0 (formato hardware generico, imparentato a MIO0)</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-top:-4px;">
+        Formato di compressione generico N64 usato da vari titoli dell'epoca (lunghezza match estesa
+        rispetto a MIO0, fino a 273 byte). Fornisci un blob già estratto da TE.
+      </p>
+      <input type="file" id="yay0-file" style="margin-bottom:8px;" />
+      <button class="btn-action btn-compile" onclick="decompressYay0UI()">Decomprimi reale</button>
+      <div class="console-logs" id="yay0-log" style="margin-top:10px; height:auto;">In attesa...</div>
+      <div id="yay0-download"></div>
+    </div>
+
+    <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
       <h2>🎨 Decoder texture N64 (formati hardware generici)</h2>
       <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-top:-4px;">
         Formati RDP generici (RGBA16/32, IA16/8/4, I8/4, CI4/8), identici su qualsiasi ROM N64.
@@ -670,6 +683,40 @@ int main() {
         a.textContent = '⬇ Scarica ROM patchata (' + (data.outputSizeBytes / 1024).toFixed(1) + ' KB)';
         a.style.cssText = 'display:block;color:var(--accent);margin-top:8px;font-family:monospace;font-size:12px;';
         downloadDiv.appendChild(a);
+      } catch (e) {
+        log.style.color = '#f87171';
+        log.textContent = 'Errore: ' + e.message;
+      }
+    }
+
+    // --- Decompressore Yay0 ---
+    async function decompressYay0UI() {
+      const log = document.getElementById('yay0-log');
+      const dl = document.getElementById('yay0-download');
+      dl.innerHTML = '';
+      const fileInput = document.getElementById('yay0-file');
+      if (!fileInput.files[0]) { log.style.color = '#f87171'; log.textContent = 'Seleziona un file.'; return; }
+      log.style.color = '#9ca3af';
+      log.textContent = '⚡ Decompressione reale in corso...';
+      try {
+        const bytes = await fileToBytes(fileInput.files[0]);
+        const res = await fetch('/api/n64/yay0/decompress', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dataBase64: bytesToB64(bytes) })
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+
+        log.style.color = '#22c55e';
+        log.textContent = '✓ Yay0 decompresso realmente: ' + data.decompressedSize + ' byte reali.';
+        const outBytes = base64ToBytes(data.decompressedBase64);
+        const blob = new Blob([outBytes], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'yay0_decompressed.bin';
+        a.textContent = '⬇ Scarica dati decompressi (' + data.decompressedSize + ' byte)';
+        a.style.cssText = 'display:block;color:var(--accent);margin-top:6px;font-family:monospace;font-size:12px;';
+        dl.appendChild(a);
       } catch (e) {
         log.style.color = '#f87171';
         log.textContent = 'Errore: ' + e.message;
@@ -1013,6 +1060,22 @@ const server = Bun.serve({
         const data = new Uint8Array(Buffer.from(body.dataBase64 || "", "base64"));
         if (!isMio0(data)) return new Response(JSON.stringify({ error: "Il blocco fornito non ha il magic 'MIO0'." }), { status: 400, headers });
         const out = mio0Decompress(data);
+        return new Response(JSON.stringify({ decompressedBase64: Buffer.from(out).toString("base64"), decompressedSize: out.length }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
+    }
+
+    // 8b. Yay0 — decompressione reale (formato imparentato a MIO0, usato da
+    // vari titoli N64 dell'epoca, formato hardware generico non specifico
+    // di un gioco). Solo decompressione: nessun encoder reale disponibile
+    // per la ricompressione in questa versione.
+    if (url.pathname === "/api/n64/yay0/decompress" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const data = new Uint8Array(Buffer.from(body.dataBase64 || "", "base64"));
+        if (!isYay0(data)) return new Response(JSON.stringify({ error: "Il blocco fornito non ha il magic 'Yay0'." }), { status: 400, headers });
+        const out = yay0Decompress(data);
         return new Response(JSON.stringify({ decompressedBase64: Buffer.from(out).toString("base64"), decompressedSize: out.length }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });

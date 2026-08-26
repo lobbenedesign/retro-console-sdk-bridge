@@ -127,17 +127,28 @@ export class CompilerPipeline {
     const elfFile = join(tempDir, `nintendo_game_${stamp}.elf`);
     writeFileSync(sourceFile, params.sourceCode);
 
+    // MACHDEP reale, identico a quello definito in
+    // $DEVKITPRO/devkitPPC/gamecube_rules e wii_rules su questa macchina
+    // (letto direttamente dai file reali, non indovinato): GameCube usa
+    // -mogc, Wii usa -mrvl, entrambi -mcpu=750 -meabi -mhard-float -DGEKKO.
     const archFlags: Record<BuildParams["platform"], string[]> = {
       switch: ["-march=armv8-a", "-mtune=cortex-a57", "-mtp=soft", "-fPIE"],
-      wii: ["-mhard-float"],
-      gamecube: ["-mhard-float"],
+      wii: ["-DGEKKO", "-mrvl", "-mcpu=750", "-meabi", "-mhard-float"],
+      gamecube: ["-DGEKKO", "-mogc", "-mcpu=750", "-meabi", "-mhard-float"],
       n64: ["-march=vr4300"],
       snes: []
+    };
+
+    const LIBOGC_INC = `${DEVKITPRO}/libogc/include`;
+    const LIBOGC_LIB: Record<"wii" | "gamecube", string> = {
+      wii: `${DEVKITPRO}/libogc/lib/wii`,
+      gamecube: `${DEVKITPRO}/libogc/lib/cube`
     };
 
     // 1. Compilazione reale del sorgente C in un vero object file.
     const compileArgs = [status.path, ...archFlags[params.platform], "-O2", "-c", sourceFile, "-o", objFile, `-I${join(import.meta.dir, "..", "include")}`];
     if (params.platform === "switch") compileArgs.push(`-I${DEVKITPRO}/libnx/include`);
+    if (params.platform === "wii" || params.platform === "gamecube") compileArgs.push(`-I${LIBOGC_INC}`);
     const proc = Bun.spawn(compileArgs, { stdout: "pipe", stderr: "pipe" });
     const stderr = await new Response(proc.stderr).text();
     const compileCode = await proc.exited;
@@ -187,6 +198,29 @@ export class CompilerPipeline {
       linkLog = linkedElf
         ? `✓ Link reale contro libnx (switch.specs): OK`
         : `⚠ Compilazione a object file riuscita, ma il link reale contro libnx è fallito: ${linkErr.slice(-500)}`;
+    }
+
+    // 1c. Per Wii/GameCube, link reale contro libogc (percorso reale letto
+    // da gamecube_rules/wii_rules: libogc/lib/cube o libogc/lib/wii) per
+    // produrre un ELF eseguibile vero, come per Switch sopra.
+    if ((params.platform === "wii" || params.platform === "gamecube") && existsSync(LIBOGC_LIB[params.platform])) {
+      const libDir = LIBOGC_LIB[params.platform];
+      // Wii ha bisogno anche di -lwiiuse -lbte (controller Wiimote/Bluetooth),
+      // reale dallo scaffold ufficiale WII_MAKEFILE (LIBS := -lwiiuse -lbte
+      // -logc -lm) — GameCube no, non ha quell'hardware.
+      const libs = params.platform === "wii" ? ["-lwiiuse", "-lbte", "-logc", "-lm"] : ["-logc", "-lm"];
+      const linkArgs = [
+        status.path, ...archFlags[params.platform],
+        "-o", elfFile, objFile,
+        `-L${libDir}`, ...libs
+      ];
+      const linkProc = Bun.spawn(linkArgs, { stdout: "pipe", stderr: "pipe", env: { ...process.env, DEVKITPRO } });
+      const linkErr = await new Response(linkProc.stderr).text();
+      const linkCode = await linkProc.exited;
+      linkedElf = linkCode === 0 && existsSync(elfFile);
+      linkLog = linkedElf
+        ? `✓ Link reale contro libogc (${libDir}): OK`
+        : `⚠ Compilazione a object file riuscita, ma il link reale contro libogc è fallito: ${linkErr.slice(-500)}`;
     }
 
     // 2. Packaging reale nel formato finale della console, se il tool esiste davvero.

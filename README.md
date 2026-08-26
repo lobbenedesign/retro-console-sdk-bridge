@@ -96,9 +96,22 @@ studio, senza toccare `nintendo_hal.h`, che restava già corretto).
 | Piattaforma | Compilazione reale | Link reale | Packaging finale reale |
 |---|---|---|---|
 | Switch (devkitA64) | ✓ | ✓ (fix `-Wl,-z,notext`) | ✓ `.nro` reale con header `NRO0` valido |
-| Wii/GameCube (devkitPPC) | ✓ | non ancora automatizzato nella pipeline one-shot | ✗ (ma lo scaffold Makefile reale sì, via `make`) |
+| GameCube (devkitPPC) | ✓ | ✓ (`-mogc -mcpu=750 -meabi -mhard-float` + `-logc -lm`, flag reali letti da `gamecube_rules`) | ✓ `.dol` reale (130 KB testato) via `elf2dol` |
+| Wii (devkitPPC) | ✓ | ✓ (`-mrvl` + `-lwiiuse -lbte -logc -lm`, flag reali letti da `wii_rules`) | ✓ `.dol` reale via `elf2dol` |
 | N64 | non installato su questa macchina | — | — |
 | SNES (WLA-DX) | non installato su questa macchina | — | — |
+
+**Correzione 2026-08-26**: la pipeline one-shot per Wii/GameCube restituiva
+solo un `.o` grezzo (mai un `.dol` funzionante), e i flag di compilazione
+usati (`-mhard-float` da solo) non corrispondevano a quelli reali del
+toolchain (verificato leggendo `$DEVKITPRO/devkitPPC/gamecube_rules` e
+`wii_rules` su questa macchina: mancavano `-DGEKKO -mogc/-mrvl -mcpu=750
+-meabi`). Aggiunto un vero step di link contro `libogc` (percorsi reali
+`libogc/lib/cube` e `libogc/lib/wii`), con le librerie Wii-specifiche
+`-lwiiuse -lbte` trovate mancanti in un primo tentativo (errore reale
+`undefined reference to WPAD_Init`, corretto aggiungendole). Verificato
+con `curl` reali: entrambe le piattaforme producono ora un `.dol` genuino
+end-to-end (compilazione + link + packaging), non solo lo scaffold Makefile.
 
 ### 4. Patcher di ROM reale (IPS/BPS) con dichiarazione d'uso onesta
 

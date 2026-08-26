@@ -307,5 +307,39 @@ istruzioni di installazione reali invece di un falso successo.
   paletteBase64? }` → `{ width, height, rgbaBase64 }` decodificati realmente.
 - `POST /api/n64/yay0/decompress` — `{ dataBase64 }` → decompressione Yay0 reale.
 
+## Test automatizzati
+
+68 test reali (151 `expect()`), eseguiti con `bun test`, in 8 file sotto
+`test/`. Nessun mock: ogni test costruisce dati binari sintetici ma
+format-corretti (header ROM, texture, level-script, blob MIO0/Yay0) secondo
+la specifica pubblica documentata nei rispettivi moduli, e verifica l'output
+reale delle funzioni — mai un ROM reale, mai dati scaricati.
+
+```bash
+bun test
+```
+
+Moduli coperti:
+- `src/rom_patcher.ts` — patcher IPS/BPS
+- `src/n64_mio0.ts` — (de)compressione MIO0
+- `src/n64_yay0.ts` — (de)compressione Yay0
+- `src/n64_rom_header.ts` — parsing header ROM N64 (magic, titolo, cartridgeId, country, version)
+- `src/n64_texture.ts` — decoder texture N64 (RGBA16, IA8, CI4 con hand-computed pixel attesi)
+- `src/sm64_level_script.ts` — parser/serializer level-script SM64, round-trip byte-per-byte
+- `src/rom_declaration.ts` — gate di dichiarazione d'uso (token HMAC, verifica/manomissione)
+- `src/compiler_pipeline.ts` — rilevamento toolchain devkitPro (Switch/GameCube/Wii)
+
+L'ultimo modulo richiede **devkitPro installato localmente** (percorso
+standard `/opt/devkitpro`, o variabile `$DEVKITPRO`) per il suo test di
+rilevamento reale: se non è presente, quel singolo test viene saltato
+onestamente (`test.skipIf`) invece di fallire — sia in locale che in CI.
+Tutti gli altri test non hanno dipendenze esterne.
+
+## CI
+
+GitHub Actions (`.github/workflows/ci.yml`) esegue `bun test` su ogni push e
+pull request verso `main`. Il runner CI non ha devkitPro installato: il test
+di rilevamento toolchain viene quindi saltato, non fallito.
+
 ## Licenza
 MIT.

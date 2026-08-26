@@ -84,3 +84,83 @@ export function yay0Decompress(data: Uint8Array): Uint8Array {
 
   return out;
 }
+
+/**
+ * 📦 Encoder Yay0 reale (greedy LZ77) — chiude il round-trip
+ * decompressione → modifica → ricompressione.
+ *
+ * Codifica letterali (bit mask = 1) e back-reference (bit mask = 0) con la
+ * STESSA semantica del decompressore sopra:
+ *   - link u16: nibble alto = conteggio-2 (match 3..17 byte), oppure 0 per
+ *     conteggio esteso 18..273 (byte aggiuntivo in sezione chunk = conteggio-18);
+ *   - distanza a 12 bit: posizione sorgente = idx - dist - 1 (finestra 4096).
+ * L'encoder cerca il match più lungo partendo dal match minimo di 3 byte
+ * (grezzo ma corretto: non è size-ottimale, è valido bit-per-bit per il
+ * decompressore — stesso compromesso dichiarato dell'encoder MIO0).
+ */
+export function yay0Compress(input: Uint8Array): Uint8Array {
+  const maskBits: number[] = []; // 1 = letterale, 0 = back-reference
+  const links: number[] = []; // u16 (count nibble | distanza 12 bit)
+  const chunks: number[] = []; // letterali + byte di estensione conteggio
+
+  let idx = 0;
+  while (idx < input.length) {
+    // ricerca greedy del match più lungo nella finestra di 4096 byte
+    let bestLen = 0;
+    let bestSrc = -1;
+    const windowStart = Math.max(0, idx - 4095);
+    const maxLen = Math.min(273, input.length - idx);
+    for (let src = windowStart; src < idx; src++) {
+      // match con overlap consentito (sorgente può raggiungere idx, stile RLE)
+      let len = 0;
+      while (len < maxLen && input[src + len] === input[idx + len]) len++;
+      if (len > bestLen) {
+        bestLen = len;
+        bestSrc = src;
+        if (bestLen === maxLen) break;
+      }
+    }
+
+    if (bestLen >= 3) {
+      maskBits.push(0);
+      const dist = idx - bestSrc - 1; // 0..4095
+      if (bestLen <= 17) {
+        links.push(((bestLen - 2) << 12) | dist);
+      } else {
+        links.push(dist); // nibble conteggio = 0
+        chunks.push(bestLen - 18); // byte di estensione in sezione chunk
+      }
+      idx += bestLen;
+    } else {
+      maskBits.push(1);
+      chunks.push(input[idx]);
+      idx += 1;
+    }
+  }
+
+  // Layout: header 16B + bitstream mask + link table + sezione chunk
+  const maskWordCount = Math.ceil(maskBits.length / 32);
+  const linkTableOffset = 16 + maskWordCount * 4;
+  const chunkDataOffset = linkTableOffset + links.length * 2;
+  const total = chunkDataOffset + chunks.length;
+  const out = new Uint8Array(total);
+  const dv = new DataView(out.buffer);
+
+  out[0] = 0x59; out[1] = 0x61; out[2] = 0x79; out[3] = 0x30; // "Yay0"
+  dv.setUint32(4, input.length, false);
+  dv.setUint32(8, linkTableOffset, false);
+  dv.setUint32(12, chunkDataOffset, false);
+
+  for (let w = 0; w < maskWordCount; w++) {
+    let word = 0;
+    for (let b = 0; b < 32; b++) {
+      const bitIdx = w * 32 + b;
+      if (bitIdx < maskBits.length && maskBits[bitIdx] === 1) word |= 1 << (31 - b);
+    }
+    dv.setUint32(16 + w * 4, word >>> 0, false);
+  }
+  for (let i = 0; i < links.length; i++) dv.setUint16(linkTableOffset + i * 2, links[i], false);
+  for (let i = 0; i < chunks.length; i++) out[chunkDataOffset + i] = chunks[i];
+
+  return out;
+}

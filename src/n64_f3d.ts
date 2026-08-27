@@ -259,3 +259,87 @@ export function extractF3dMesh(
 
   return { mesh: { vertices, triangles, textureImages }, warnings };
 }
+
+/**
+ * 🔄 Serializzatore mesh → byte F3D (round-trip dell'editor 3D).
+ *
+ * Due output, entrambi reali:
+ * 1. `serializeF3dVertices` — riemette il blob vertici (16 byte/vertex,
+ *    layout Vtx_tn). È il caso d'uso principale: l'utente modifica le
+ *    posizioni nella UI e la display list originale NON cambia (i comandi
+ *    VTX referenziano il blob per indirizzo: stessi byte-count, stessa DL).
+ * 2. `buildF3dDisplayList` — ricostruisce da zero una display list
+ *    VTX + TRI1×N + ENDDL con l'encoding classico documentato in gbi.h
+ *    (w0 = G_VTX<<24 | ((n-1)<<4|v0)<<16 | n*16, TRI1 w1 con indici ×10).
+ *    Limite hardware onesto: il campo n dell'VTX classico è 4 bit → max
+ *    16 vertici per comando; mesh più grandi → errore esplicito, mai
+ *    output silenziosamente corrotto.
+ */
+
+/** Riemette il blob vertici 16 byte/vertex dopo modifiche (posizioni, UV…). */
+export function serializeF3dVertices(vertices: F3dVertex[]): Uint8Array {
+  const out = new Uint8Array(vertices.length * 16);
+  const dv = new DataView(out.buffer);
+  for (let i = 0; i < vertices.length; i++) {
+    const v = vertices[i];
+    const o = i * 16;
+    const int16 = (val: number, off: number, what: string) => {
+      if (val < -0x8000 || val > 0x7fff) {
+        throw new Error(`Vertice ${i}, campo ${what}: valore ${val} fuori dal range int16 dell'hardware.`);
+      }
+      dv.setInt16(off, val, false);
+    };
+    int16(Math.round(v.x), o, "x");
+    int16(Math.round(v.y), o + 2, "y");
+    int16(Math.round(v.z), o + 4, "z");
+    dv.setUint16(o + 6, 0, false); // flag: non usato dai tool di editing
+    int16(Math.round(v.u), o + 8, "u");
+    int16(Math.round(v.v), o + 10, "v");
+    dv.setInt8(o + 12, Math.max(-128, Math.min(127, Math.round(v.nx))));
+    dv.setInt8(o + 13, Math.max(-128, Math.min(127, Math.round(v.ny))));
+    dv.setInt8(o + 14, Math.max(-128, Math.min(127, Math.round(v.nz))));
+    dv.setUint8(o + 15, Math.max(0, Math.min(255, Math.round(v.a))));
+  }
+  return out;
+}
+
+/**
+ * Ricostruisce una display list F3D classica dalla mesh. L'indirizzo del
+ * blob vertici nel w1 del VTX è segmentato (es. 0x04000000): il chiamante
+ * lo fornisce perché dipende dalla ROM/segmento di destinazione.
+ */
+export function buildF3dDisplayList(mesh: F3dMesh, vtxAddress = 0x04000000): Uint8Array {
+  if (mesh.vertices.length < 1) throw new Error("Mesh senza vertici.");
+  if (mesh.vertices.length > 16) {
+    throw new Error(
+      `Mesh da ${mesh.vertices.length} vertici: il comando VTX classico F3D ne carica max 16 per volta ` +
+        "(campo n a 4 bit). Per mesh più grandi servono VTX multipli con re-basing degli indici — onestamente non supportato in questa versione."
+    );
+  }
+  for (const [a, b, c] of mesh.triangles) {
+    if (a >= mesh.vertices.length || b >= mesh.vertices.length || c >= mesh.vertices.length) {
+      throw new Error(`Triangolo [${a},${b},${c}] con indici fuori dai ${mesh.vertices.length} vertici.`);
+    }
+  }
+
+  const commands: Uint8Array[] = [];
+  const pushWord = (w0: number, w1: number) => {
+    const g = new Uint8Array(8);
+    new DataView(g.buffer).setUint32(0, w0 >>> 0, false);
+    new DataView(g.buffer).setUint32(4, w1 >>> 0, false);
+    commands.push(g);
+  };
+
+  const n = mesh.vertices.length;
+  // VTX classico: w0 = 0x01<<24 | ((n-1)<<4|v0=0)<<16 | n*16
+  pushWord((0x01 << 24) | (((n - 1) << 4) << 16) | (n * 16), vtxAddress);
+  for (const [a, b, c] of mesh.triangles) {
+    pushWord((0x05 << 24), (0 << 24) | ((a * 10) << 16) | ((b * 10) << 8) | (c * 10));
+  }
+  pushWord((0xdf << 24), 0); // ENDDL
+
+  const out = new Uint8Array(commands.length * 8);
+  let off = 0;
+  for (const c of commands) { out.set(c, off); off += 8; }
+  return out;
+}

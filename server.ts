@@ -22,6 +22,8 @@ import { serializeF3dVertices, buildF3dDisplayList } from "./src/n64_f3d";
 import { identifyRomFile, identifyConsole } from "./src/rom_identify";
 import { unzip } from "./src/zip_reader";
 import { DASHBOARD_HTML } from "./src/dashboard_html";
+import { parseGenesisRomHeader, fixGenesisChecksum } from "./src/genesis_rom_header";
+import { detectExtraToolchains, scaffoldExtra } from "./src/segasony_scaffold";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
 import { parseN64RomHeader } from "./src/n64_rom_header";
 import { decodeN64Texture, requiredByteLength, BITS_PER_PIXEL, type N64TextureFormat } from "./src/n64_texture";
@@ -72,10 +74,59 @@ const server = Bun.serve({
     // 4. Scaffold API — genera un vero Makefile devkitPro + main.c per far
     // partire un progetto homebrew reale multi-file col sistema di build
     // standard, invece del solo compilatore one-shot di questo studio.
+    // Piattaforme extra (genesis/dreamcast/psp): scaffold reale dei rispettivi
+    // SDK (SGDK/KOS/PSPSDK) — senza compilazione, dichiarato onestamente.
     if (url.pathname === "/api/scaffold" && req.method === "GET") {
       const platform = url.searchParams.get("platform") as any;
+      if (platform === "genesis" || platform === "dreamcast" || platform === "psp") {
+        return new Response(JSON.stringify(scaffoldExtra(platform)), { headers });
+      }
       const result = pipeline.scaffoldProject(platform);
       return new Response(JSON.stringify(result), { headers });
+    }
+
+    // 4b. Toolchain status per le piattaforme extra (SGDK/KOS/pspdev):
+    // rilevamento reale, "non installato" onesto con istruzioni vere.
+    if (url.pathname === "/api/toolchains/extra" && req.method === "GET") {
+      return new Response(JSON.stringify(detectExtraToolchains()), { headers });
+    }
+
+    // 4c. Header ROM Genesis/Mega Drive + verifica checksum (algoritmo Sega
+    // originale + variante SGDK, entrambi reali e distinti).
+    if (url.pathname === "/api/genesis/rom-header" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const rom = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        const h = parseGenesisRomHeader(rom);
+        return new Response(JSON.stringify({
+          ...h,
+          storedChecksum: "0x" + h.storedChecksum.toString(16).toUpperCase(),
+          computedChecksum: "0x" + h.computedChecksum.toString(16).toUpperCase(),
+          computedChecksumSgdk: "0x" + h.computedChecksumSgdk.toString(16).toUpperCase(),
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 4d. Fix checksum Genesis (formato Sega originale o SGDK) — dietro gate.
+    if (url.pathname === "/api/genesis/checksum/fix" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        if (!verifyToken(body.token, body.fullName)) {
+          return new Response(JSON.stringify({ error: "Dichiarazione non valida o mancante (stesso gate del patcher)." }), { status: 403, headers });
+        }
+        const rom = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        const { rom: fixed, checksum } = fixGenesisChecksum(rom, !!body.sgdk);
+        return new Response(JSON.stringify({
+          checksum: "0x" + checksum.toString(16).toUpperCase(),
+          format: body.sgdk ? "sgdk (XOR)" : "sega (somma da 0x200)",
+          romBase64: Buffer.from(fixed).toString("base64"),
+          size: fixed.length,
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
     }
 
     // 5. Testo reale della dichiarazione richiesta prima di usare il patcher ROM.

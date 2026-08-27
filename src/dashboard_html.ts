@@ -305,6 +305,19 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
   </div>
 
   <div class="card">
+    <h2>2b · Checksum Genesis / Mega Drive</h2>
+    <p class="muted" style="margin:0 0 10px">Verifica e fix del checksum a 0x18E. Due formati REALI: algoritmo Sega originale (somma word da 0x200, fonte Sega Retro/plutiedev) e variante XOR di SGDK (dal sorgente sizebnd). Usa la ROM caricata o un file.</p>
+    <div class="row">
+      <div class="field">File ROM (se nessuna caricata)<input type="file" id="gen-file" /></div>
+      <button class="btn dark" onclick="genHeaderUI()">Leggi header e verifica</button>
+      <button class="btn pri" onclick="genFixUI(false)">Fix (formato Sega)</button>
+      <button class="btn dark" onclick="genFixUI(true)">Fix (formato SGDK)</button>
+    </div>
+    <div class="log" id="gen-log" style="margin-top:10px">—</div>
+    <div id="gen-dl"></div>
+  </div>
+
+  <div class="card">
     <h2>3 · Applica patch IPS / BPS</h2>
     <div class="row">
       <div class="field">ROM base (default: caricata)<input type="file" id="patch-rom" /></div>
@@ -365,6 +378,7 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
   <div class="card"><h2>Toolchain devkitPro</h2><div id="tc-status" class="log">caricamento…</div></div>
   <div class="card"><h2>splat (splitter reale)</h2><div id="splat-status" class="log">caricamento…</div></div>
   <div class="card"><h2>N64Recomp</h2><div id="nrecomp-status" class="log">caricamento…</div></div>
+  <div class="card"><h2>Sega / Sony (SGDK · KallistiOS · pspdev)</h2><div id="extra-status" class="log">caricamento…</div></div>
 </section>
 
 </main>
@@ -754,6 +768,37 @@ async function crcFixUI() {
   setFlow("fs-export", true);
 }
 
+// --- Checksum Genesis ---
+async function genRom() { return $("gen-file").files[0] ? fileToBytes($("gen-file").files[0]) : state.rom; }
+async function genHeaderUI() {
+  const rom = await genRom();
+  if (!rom) { log("gen-log", "Carica una ROM (vista ROM) o seleziona un file.", "var(--err)"); return; }
+  log("gen-log", "⚡ Lettura header Mega Drive…", "var(--warn)");
+  const d = await api("/api/genesis/rom-header", { romBase64: toB64(rom) });
+  if (d.error) { log("gen-log", "✗ " + d.error, "var(--err)"); return; }
+  log("gen-log",
+    (d.looksLikeGenesisRom ? "✓ Header SEGA riconosciuto" : "⚠ Il nome console non inizia con SEGA (potrebbe non essere una ROM MD)") +
+    "\\nTitolo (intl): " + (d.overseasTitle || "(vuoto)") +
+    "\\nSeriale: " + d.serial + " · Regioni: " + (d.regions.join(", ") || d.regionCodes) +
+    "\\nROM dichiarata: 0x" + d.romStart.toString(16) + "-0x" + d.romEnd.toString(16) +
+    "\\nDispositivi: " + (d.devices.join("; ") || "(nessuno mappato)") +
+    "\\nChecksum memorizzato: " + d.storedChecksum +
+    "\\nCalcolato Sega: " + d.computedChecksum + " · Calcolato SGDK (XOR): " + d.computedChecksumSgdk +
+    "\\n" + (d.checksumValid ? "✓ Valido (formato " + d.checksumFormat + ")" : "⚠ NON valido: usa un pulsante Fix"),
+    d.checksumValid ? "var(--ok)" : "var(--warn)");
+}
+async function genFixUI(sgdk) {
+  const rom = await genRom();
+  if (!rom) { log("gen-log", "Carica una ROM.", "var(--err)"); return; }
+  if (!state.declToken) { log("gen-log", "✗ Serve la dichiarazione (punto 1 sopra).", "var(--err)"); return; }
+  log("gen-log", "⚡ Ricalcolo checksum…", "var(--warn)");
+  const d = await api("/api/genesis/checksum/fix", { fullName: state.declName, token: state.declToken, romBase64: toB64(rom), sgdk });
+  if (d.error) { log("gen-log", "✗ " + d.error, "var(--err)"); return; }
+  log("gen-log", "✓ Checksum riscritto: " + d.checksum + " (formato " + d.format + ").", "var(--ok)");
+  $("gen-dl").innerHTML = "";
+  download(fromB64(d.romBase64), "rom_genfix.md", "Scarica ROM con checksum corretto (" + kb(d.size) + ")", "gen-dl");
+}
+
 async function patchApplyUI() {
   const pf = $("patch-file").files[0];
   if (!pf) { log("patch-log", "Seleziona il file patch.", "var(--err)"); return; }
@@ -807,7 +852,11 @@ const PLATS = [
   ["gamecube", "Nintendo GameCube", "PowerPC · libogc · .dol"],
   ["n64", "Nintendo 64", "MIPS · libdragon · .z64"],
   ["snes", "Super Nintendo", "65816 · pvsneslib"],
+  ["genesis", "Sega Genesis / Mega Drive", "68000 · SGDK · solo scaffold"],
+  ["dreamcast", "Sega Dreamcast", "SH-4 · KallistiOS · solo scaffold"],
+  ["psp", "Sony PSP", "MIPS32 · PSPSDK · solo scaffold"],
 ];
+const SCAFFOLD_ONLY = ["genesis", "dreamcast", "psp"];
 const DEFAULT_CODE = "// Codice sorgente con astrazione nintendo_hal.h
 #include <nintendo_hal.h>
 
@@ -829,6 +878,12 @@ function renderPlats() {
 renderPlats();
 $("code-editor").value = DEFAULT_CODE;
 async function compileUI() {
+  if (SCAFFOLD_ONLY.indexOf(activePlatform) >= 0) {
+    log("compile-log", "ℹ️ Per " + activePlatform + " questo studio genera SOLO lo scaffold reale (SGDK / KallistiOS / PSPSDK): " +
+      "la compilazione richiede il toolchain specifico installato, che qui non c'è e non fingiamo. " +
+      "Usa il pulsante 'Genera progetto Makefile'.", "var(--warn)");
+    return;
+  }
   log("compile-log", "⚡ Compilazione reale in corso…", "var(--warn)");
   const d = await api("/api/build", { platform: activePlatform, sourceCode: $("code-editor").value });
   log("compile-log", d.logs, d.success ? "var(--ok)" : "var(--err)");
@@ -852,6 +907,12 @@ async function loadSetup() {
   $("splat-status").textContent = sp.installed ? "✓ splat " + sp.version + " (" + sp.pythonPath + ")" : "✗ non installato — " + sp.installHint;
   const rc = await (await fetch("/api/recomp/status")).json();
   $("nrecomp-status").textContent = rc.installed ? "✓ " + rc.binaryPath : "✗ non installato — " + rc.installHint;
+  const ex = await (await fetch("/api/toolchains/extra")).json();
+  $("extra-status").textContent =
+    (ex.genesis.detected ? "✓ " : "✗ ") + "Genesis/MD — SGDK: " + (ex.genesis.detected ? ex.genesis.path : "non installato. " + ex.genesis.installHint) + "\\n" +
+    (ex.dreamcast.detected ? "✓ " : "✗ ") + "Dreamcast — KallistiOS: " + (ex.dreamcast.detected ? ex.dreamcast.path : "non installato. " + ex.dreamcast.installHint) + "\\n" +
+    (ex.psp.detected ? "✓ " : "✗ ") + "PSP — pspdev: " + (ex.psp.detected ? ex.psp.path : "non installato. " + ex.psp.installHint) +
+    "\\n\\nNota onesta: per queste tre piattaforme lo studio genera solo scaffold reali; la compilazione richiede i rispettivi toolchain.";
 }
 loadSetup();
 

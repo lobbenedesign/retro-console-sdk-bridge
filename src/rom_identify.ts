@@ -100,6 +100,12 @@ export function identifyConsole(rom: Uint8Array): ConsoleMatch {
     return { console: "Nintendo Wii", format: "ISO/WBFS-origin", confidence: "magic", detail: "Disc magic 0x5D1C9EA3 a 0x18." };
   }
 
+  // PSP: PBP header reale ("\\0PBP" a offset 0 — formato documentato
+  // pubblicamente, usato da EBOOT.PBP e PBP tools della community pspdev)
+  if (startsWith(rom, 0, [0x00, 0x50, 0x42, 0x50])) {
+    return { console: "Sony PlayStation Portable", format: "PBP (EBOOT.PBP)", confidence: "magic", detail: "Firma \"\\0PBP\" a offset 0: contenitore PBP (EBOOT homebrew o update ufficiale)." };
+  }
+
   // SNES: nessun magic fisso — prova gli offset header con checksum (euristica)
   if (rom.length >= 0x8000) {
     try {

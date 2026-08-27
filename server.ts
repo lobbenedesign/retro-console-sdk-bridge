@@ -11,7 +11,14 @@ import { CompilerPipeline } from "./src/compiler_pipeline";
 import { applyPatch, detectPatchFormat } from "./src/rom_patcher";
 import { REQUIRED_DECLARATION_TEXT, recordDeclaration, verifyToken } from "./src/rom_declaration";
 import { isMio0, mio0Decompress, mio0CompressForTesting } from "./src/n64_mio0";
-import { isYay0, yay0Decompress } from "./src/n64_yay0";
+import { isYay0, yay0Decompress, yay0Compress } from "./src/n64_yay0";
+import { computeN64Checksums, fixN64Checksums, type CicChip } from "./src/n64_crc";
+import { parseF3dDisplayList, extractF3dMesh } from "./src/n64_f3d";
+import { scanRomSections, detectSplat, runSplatSplit } from "./src/n64_split";
+import { detectN64Recomp, generateRecompToml, runN64Recomp } from "./src/recomp";
+import { disassembleMips } from "./src/mips_disasm";
+import { parseSnesRomHeader } from "./src/snes_rom_header";
+import { serializeF3dVertices, buildF3dDisplayList } from "./src/n64_f3d";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
 import { parseN64RomHeader } from "./src/n64_rom_header";
 import { decodeN64Texture, requiredByteLength, BITS_PER_PIXEL, type N64TextureFormat } from "./src/n64_texture";
@@ -342,6 +349,101 @@ int main() {
         <div class="console-logs" id="patch-log" style="margin-top:10px;">In attesa...</div>
         <div id="patch-download"></div>
       </div>
+    </div>
+
+    <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
+      <h2>🔐 Fix checksum CRC header ROM N64 (CIC reale)</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-top:-4px;">
+        Il PIF verifica CRC1/CRC2 a offset 0x10/0x14: una ROM modificata senza ricalcolo NON boota.
+        Rileva il chip CIC dall'IPL3 (tabella usata da splat) e ricalcola con gli algoritmi reali
+        (famiglia 6102 da sm64tools, variante 6105 da n64checksum). Serve la ROM estesa (≥ 0x101000 byte).
+      </p>
+      <input type="file" id="crc-file" style="margin-bottom:8px;" />
+      <div style="display:flex; gap:10px;">
+        <button class="btn-action" style="background:#141929;color:#fff;border:1px solid var(--border);" onclick="crcComputeUI()">Verifica checksum</button>
+        <button class="btn-action btn-compile" onclick="crcFixUI()">Ricalcola e scarica ROM fixata</button>
+      </div>
+      <div class="console-logs" id="crc-log" style="margin-top:10px; height:auto;">In attesa… (il fix richiede la dichiarazione completata)</div>
+      <div id="crc-download"></div>
+    </div>
+
+    <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
+      <h2>🔷 Splitter ROM: scanner blocchi MIO0/Yay0 + splat reale</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-top:-4px;">
+        Lo scanner nativo trova i blocchi compressi reali (offset, dimensioni) senza indovinarli a mano.
+        Con <code>splat</code> installato (<code>pip install splat</code>) lo split completo separa codice e asset
+        come nei progetti di decompilazione reali — eseguito in dir temporanea cancellata subito dopo.
+      </p>
+      <input type="file" id="split-file" style="margin-bottom:8px;" />
+      <div style="display:flex; gap:10px;">
+        <button class="btn-action" style="background:#141929;color:#fff;border:1px solid var(--border);" onclick="splitScanUI()">Scansiona blocchi (nativo)</button>
+        <button class="btn-action btn-compile" onclick="splatSplitUI()">Split reale con splat</button>
+      </div>
+      <div class="console-logs" id="split-log" style="margin-top:10px; height:auto; max-height:220px;">In attesa…</div>
+    </div>
+
+    <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
+      <h2>🧊 Parser display list F3D → mesh 3D (opcode da n64decomp/sm64, CC0)</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-top:-4px;">
+        Fornisci la display list (8 byte/comando) e, facoltativamente, il blob vertici (16 byte/vertex):
+        estrae comandi, vertici e triangoli, e disegna il wireframe reale su canvas.
+      </p>
+      <label class="meta-item" style="display:block;">File display list:</label>
+      <input type="file" id="f3d-dl-file" style="margin-bottom:6px;" />
+      <label class="meta-item" style="display:block;">File blob vertici (opzionale, 16 byte/vertex):</label>
+      <input type="file" id="f3d-vtx-file" style="margin-bottom:8px;" />
+      <button class="btn-action btn-compile" onclick="f3dParseUI()">Interpreta display list reale</button>
+      <div class="console-logs" id="f3d-log" style="margin-top:10px; height:auto; max-height:180px;">In attesa…</div>
+      <div id="f3d-cmd-table" style="margin-top:10px; max-height:260px; overflow-y:auto;"></div>
+      <div id="f3d-vtx-editor" style="display:none; margin-top:12px;">
+        <h2 style="font-size:13px;">✏️ Vertici modificabili (round-trip 3D)</h2>
+        <div id="f3d-vtx-table" style="max-height:220px; overflow-y:auto;"></div>
+        <button class="btn-action btn-compile" style="margin-top:8px;" onclick="f3dSerializeUI()">Riserializza vertici e scarica blob + display list</button>
+        <div id="f3d-download"></div>
+      </div>
+      <canvas id="f3d-canvas" width="480" height="320" style="margin-top:10px; background:#05060b; border:1px solid var(--border); width:100%; max-width:480px;"></canvas>
+    </div>
+
+    <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
+      <h2>🔍 Disassembler MIPS R4300i (subset reale del codice N64)</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-top:-4px;">
+        Disassembla realmente un blob di codice (es. una sezione trovata dallo scanner o da splat).
+        Subset MIPS I/III documentato: SPECIAL/REGIMM, salti, load/store, aritmetica immediata.
+        Istruzioni FPU/COP1 e 64-bit rare → UNKNOWN onesto con la word grezza.
+      </p>
+      <input type="file" id="mips-file" style="margin-bottom:6px;" />
+      <label style="font-size:12px;">Indirizzo base (hex): <input type="text" id="mips-base" value="80246000" style="width:90px; background:#05060b; border:1px solid var(--border); color:#fff; border-radius:4px; padding:4px;" /></label>
+      <button class="btn-action btn-compile" style="margin-top:8px;" onclick="mipsDisasmUI()">Disassembla realmente</button>
+      <div class="console-logs" id="mips-log" style="margin-top:10px; height:auto;">In attesa…</div>
+      <div id="mips-table" style="margin-top:10px; max-height:300px; overflow-y:auto;"></div>
+    </div>
+
+    <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
+      <h2>🎮 Inspector header ROM SNES (LoROM / HiROM / ExHiROM)</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-top:-4px;">
+        Prova i tre offset header reali (0x7FC0/0xFFC0/0x40FFC0) e sceglie la mappatura con checksum
+        coerente (complement + checksum = 0xFFFF). Titolo, chipset, ROM/SRAM size, regione, versione.
+      </p>
+      <input type="file" id="snes-file" style="margin-bottom:8px;" />
+      <button class="btn-action btn-compile" onclick="snesHeaderUI()">Leggi header reale</button>
+      <div class="console-logs" id="snes-log" style="margin-top:10px; height:auto;">In attesa…</div>
+    </div>
+
+    <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
+      <h2>♻️ N64Recomp — orchestrazione reale (ricompilazione statica MIPS→nativo)</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-top:-4px;">
+        Se N64Recomp è installato sulla macchina, questo pannello genera il <code>recomp.toml</code> reale
+        (schema dell'esempio ufficiale Zelda64Recomp) e può eseguire la ricompilazione in dir temporanea.
+        Richiede ROM non compressa + ELF con simboli (da splat/decomp) per risultati completi.
+      </p>
+      <div class="memory-map" id="recomp-status">Stato: caricamento…</div>
+      <label class="meta-item" style="display:block; margin-top:10px;">Nome gioco:</label>
+      <input type="text" id="recomp-game" placeholder="Super Mario 64" style="width:100%; padding:8px; margin-bottom:8px; background:#05060b; border:1px solid var(--border); border-radius:6px; color:#fff;" />
+      <label class="meta-item" style="display:block;">Entrypoint (hex, es. 80246000 per SM64 US):</label>
+      <input type="text" id="recomp-entry" placeholder="80246000" style="width:100%; padding:8px; margin-bottom:8px; background:#05060b; border:1px solid var(--border); border-radius:6px; color:#fff;" />
+      <button class="btn-action" style="background:#141929;color:#fff;border:1px solid var(--border);" onclick="recompConfigUI()">Genera recomp.toml reale</button>
+      <div class="console-logs" id="recomp-log" style="margin-top:10px; height:auto; max-height:200px;">In attesa…</div>
+      <div id="recomp-download"></div>
     </div>
 
     <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
@@ -780,6 +882,338 @@ int main() {
       }
     }
 
+    // --- Fix checksum CRC N64 ---
+    async function crcComputeUI() {
+      const log = document.getElementById('crc-log');
+      const f = document.getElementById('crc-file').files[0];
+      if (!f) { log.style.color = '#f87171'; log.textContent = 'Seleziona una ROM.'; return; }
+      log.style.color = '#9ca3af'; log.textContent = '⚡ Calcolo checksum reale in corso…';
+      try {
+        const rom = await fileToBytes(f);
+        const res = await fetch('/api/n64/crc/compute', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ romBase64: bytesToB64(rom) })
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+        log.style.color = data.valid ? '#22c55e' : '#facc15';
+        log.textContent = 'CIC rilevato: ' + data.cic + '\\nCRC1 calcolato: ' + data.crc1 + ' (in ROM: ' + data.storedCrc1 + ')\\nCRC2 calcolato: ' + data.crc2 + ' (in ROM: ' + data.storedCrc2 + ')\\n' + (data.valid ? '✓ Checksum VALIDI: la ROM boota così com\\'è.' : '⚠ Checksum NON validi: la ROM modificata va fixata (usa il pulsante a fianco).');
+      } catch (e) { log.style.color = '#f87171'; log.textContent = 'Errore: ' + e.message; }
+    }
+
+    async function crcFixUI() {
+      const log = document.getElementById('crc-log');
+      const dl = document.getElementById('crc-download');
+      dl.innerHTML = '';
+      const f = document.getElementById('crc-file').files[0];
+      if (!f) { log.style.color = '#f87171'; log.textContent = 'Seleziona una ROM.'; return; }
+      if (!declarationToken) { log.style.color = '#f87171'; log.textContent = '✗ Completa prima la dichiarazione nel pannello patcher (stesso gate).'; return; }
+      log.style.color = '#9ca3af'; log.textContent = '⚡ Ricalcolo CRC reali e scrittura header…';
+      try {
+        const rom = await fileToBytes(f);
+        const res = await fetch('/api/n64/crc/fix', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fullName: declarationName, token: declarationToken, romBase64: bytesToB64(rom) })
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+        log.style.color = '#22c55e';
+        log.textContent = (data.wasValid ? '✓ Erano già validi, riscritti comunque: ' : '✓ Corretti: ') + 'CRC1 ' + data.crc1 + ', CRC2 ' + data.crc2 + ' (CIC ' + data.cic + ').';
+        const bytes = base64ToBytes(data.romBase64);
+        const blob = new Blob([bytes], { type: 'application/octet-stream' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = f.name.replace(/(\\.[^.]+)$/, '_crcfix$1');
+        a.textContent = '⬇ Scarica ROM con checksum corretti (' + (data.size / 1024 / 1024).toFixed(1) + ' MB)';
+        a.style.cssText = 'display:block;color:var(--accent);margin-top:8px;font-family:monospace;font-size:12px;';
+        dl.appendChild(a);
+      } catch (e) { log.style.color = '#f87171'; log.textContent = 'Errore: ' + e.message; }
+    }
+
+    // --- Splitter: scanner nativo + splat ---
+    async function splitScanUI() {
+      const log = document.getElementById('split-log');
+      const f = document.getElementById('split-file').files[0];
+      if (!f) { log.style.color = '#f87171'; log.textContent = 'Seleziona una ROM.'; return; }
+      log.style.color = '#9ca3af'; log.textContent = '⚡ Scansione blocchi MIO0/Yay0 in corso…';
+      try {
+        const rom = await fileToBytes(f);
+        const res = await fetch('/api/n64/split/scan', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ romBase64: bytesToB64(rom) })
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+        log.style.color = '#22c55e';
+        let html = '✓ ' + data.count + ' blocchi compressi trovati con header valido:' +
+          '<table style="width:100%; font-size:11px; border-collapse:collapse; margin-top:6px;">' +
+          '<tr style="color:var(--text-muted); text-align:left;"><th>Offset</th><th>Formato</th><th>Compresso</th><th>Decompresso</th></tr>';
+        data.sections.forEach(s => {
+          html += '<tr style="border-top:1px solid var(--border);"><td>' + s.offset + '</td><td>' + s.format + '</td><td>' + s.compressedSize + ' B</td><td>' + s.decompressedSize + ' B</td></tr>';
+        });
+        html += '</table>';
+        log.innerHTML = html;
+      } catch (e) { log.style.color = '#f87171'; log.textContent = 'Errore: ' + e.message; }
+    }
+
+    async function splatSplitUI() {
+      const log = document.getElementById('split-log');
+      const f = document.getElementById('split-file').files[0];
+      if (!f) { log.style.color = '#f87171'; log.textContent = 'Seleziona una ROM.'; return; }
+      if (!declarationToken) { log.style.color = '#f87171'; log.textContent = '✗ Completa prima la dichiarazione (stesso gate del patcher).'; return; }
+      log.style.color = '#9ca3af'; log.textContent = '⚡ Split reale con splat in corso (può richiedere qualche minuto)…';
+      try {
+        const rom = await fileToBytes(f);
+        const res = await fetch('/api/splat/split', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fullName: declarationName, token: declarationToken, romBase64: bytesToB64(rom) })
+        });
+        const data = await res.json();
+        if (data.error || !data.success) {
+          log.style.color = '#f87171';
+          log.textContent = '✗ ' + (data.error || data.logs).substring(0, 1500);
+          return;
+        }
+        log.style.color = '#22c55e';
+        log.textContent = '✓ splat ha prodotto ' + data.files.length + ' file reali (i primi 200, max 2MB l\\'uno).';
+        data.files.slice(0, 40).forEach(file => {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(new Blob([base64ToBytes(file.base64)], { type: 'application/octet-stream' }));
+          a.download = file.name.replace(/\\//g, '_');
+          a.textContent = '⬇ ' + file.name + ' (' + file.size + ' B)';
+          a.style.cssText = 'display:block;color:var(--accent);margin-top:4px;font-family:monospace;font-size:11px;';
+          log.appendChild(a);
+        });
+        const cfg = document.createElement('a');
+        cfg.href = URL.createObjectURL(new Blob([data.configYaml], { type: 'text/yaml' }));
+        cfg.download = 'splat_config.yaml';
+        cfg.textContent = '⬇ config.yaml generato da splat';
+        cfg.style.cssText = 'display:block;color:var(--accent);margin-top:8px;font-family:monospace;font-size:11px;';
+        log.appendChild(cfg);
+      } catch (e) { log.style.color = '#f87171'; log.textContent = 'Errore: ' + e.message; }
+    }
+
+    // --- Parser F3D + wireframe ---
+    async function f3dParseUI() {
+      const log = document.getElementById('f3d-log');
+      const cmdTable = document.getElementById('f3d-cmd-table');
+      const dlFile = document.getElementById('f3d-dl-file').files[0];
+      const vtxFile = document.getElementById('f3d-vtx-file').files[0];
+      cmdTable.innerHTML = '';
+      if (!dlFile) { log.style.color = '#f87171'; log.textContent = 'Seleziona il file display list.'; return; }
+      log.style.color = '#9ca3af'; log.textContent = '⚡ Parsing display list reale in corso…';
+      try {
+        const body = { dlBase64: bytesToB64(await fileToBytes(dlFile)) };
+        if (vtxFile) body.vtxBase64 = bytesToB64(await fileToBytes(vtxFile));
+        const res = await fetch('/api/n64/f3d/parse', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+
+        log.style.color = '#22c55e';
+        log.textContent = '✓ ' + data.commands.length + ' comandi interpretati.' +
+          (data.endedAt === null ? ' ⚠ Nessun ENDDL trovato: lista troncata.' : ' (ENDDL a 0x' + data.endedAt.toString(16) + ')') +
+          (data.warnings && data.warnings.length ? '\\n⚠ ' + data.warnings.length + ' avvisi (VTX/TRI fuori bounds).' : '');
+
+        let html = '<table style="width:100%; font-size:11px; border-collapse:collapse;">' +
+          '<tr style="color:var(--text-muted); text-align:left;"><th>Offset</th><th>Comando</th><th>Campi</th></tr>';
+        data.commands.slice(0, 100).forEach(cmd => {
+          const fields = Object.entries(cmd.fields).map(([k, v]) => k + '=' + v).join(' ');
+          html += '<tr style="border-top:1px solid var(--border);"><td>0x' + cmd.offset.toString(16) + '</td><td>' + cmd.name + '</td><td style="color:var(--text-muted);">' + fields + '</td></tr>';
+        });
+        html += '</table>';
+        cmdTable.innerHTML = html;
+
+        if (data.mesh && data.mesh.triangles.length > 0) {
+          drawF3dWireframe(data.mesh);
+          renderF3dVertexEditor(data.mesh);
+        } else if (data.mesh) { log.textContent += '\\nMesh senza triangoli (nessun TRI1 valido con i vertici forniti).'; }
+      } catch (e) { log.style.color = '#f87171'; log.textContent = 'Errore: ' + e.message; }
+    }
+
+    function drawF3dWireframe(mesh) {
+      const canvas = document.getElementById('f3d-canvas');
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#05060b';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (mesh.vertices.length === 0) return;
+
+      // proiezione prospettica semplice, autocentrata (preview 3D reale lato client)
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      mesh.vertices.forEach(v => {
+        minX = Math.min(minX, v.x); maxX = Math.max(maxX, v.x);
+        minY = Math.min(minY, v.y); maxY = Math.max(maxY, v.y);
+        minZ = Math.min(minZ, v.z); maxZ = Math.max(maxZ, v.z);
+      });
+      const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2, cz = (minZ + maxZ) / 2;
+      const range = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 1);
+      const scale = (canvas.width * 0.35) / range;
+      const project = v => {
+        const zoom = 600 / (600 + (v.z - cz));
+        return {
+          x: canvas.width / 2 + (v.x - cx) * scale * zoom,
+          y: canvas.height / 2 - (v.y - cy) * scale * zoom
+        };
+      };
+      ctx.strokeStyle = '#00c6ff';
+      ctx.lineWidth = 0.7;
+      mesh.triangles.forEach(([a, b, c]) => {
+        const va = project(mesh.vertices[a]), vb = project(mesh.vertices[b]), vc = project(mesh.vertices[c]);
+        ctx.beginPath();
+        ctx.moveTo(va.x, va.y); ctx.lineTo(vb.x, vb.y); ctx.lineTo(vc.x, vc.y); ctx.closePath();
+        ctx.stroke();
+      });
+      ctx.fillStyle = '#9ca3af';
+      ctx.font = '11px monospace';
+      ctx.fillText(mesh.vertices.length + ' vertici, ' + mesh.triangles.length + ' triangoli (wireframe reale)', 8, canvas.height - 8);
+    }
+
+    // --- Disassembler MIPS ---
+    async function mipsDisasmUI() {
+      const log = document.getElementById('mips-log');
+      const table = document.getElementById('mips-table');
+      table.innerHTML = '';
+      const f = document.getElementById('mips-file').files[0];
+      if (!f) { log.style.color = '#f87171'; log.textContent = 'Seleziona un file con codice MIPS.'; return; }
+      log.style.color = '#9ca3af'; log.textContent = '⚡ Disassemblaggio reale in corso…';
+      try {
+        const bytes = await fileToBytes(f);
+        const base = parseInt(document.getElementById('mips-base').value.replace(/^0x/i, ''), 16) || 0x80246000;
+        const res = await fetch('/api/n64/mips/disassemble', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dataBase64: bytesToB64(bytes), baseAddress: base, max: 300 })
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+        log.style.color = data.unknownCount > 0 ? '#facc15' : '#22c55e';
+        log.textContent = '✓ ' + data.count + ' istruzioni disassemblate (' + data.unknownCount + ' UNKNOWN onesti).';
+        let html = '<table style="width:100%; font-size:11px; border-collapse:collapse;">' +
+          '<tr style="color:var(--text-muted); text-align:left;"><th>Addr</th><th>Word</th><th>Istruzione</th></tr>';
+        data.instructions.forEach(ins => {
+          html += '<tr style="border-top:1px solid var(--border);"><td>0x' + ins.address.toString(16).toUpperCase() +
+            '</td><td style="color:var(--text-muted);">' + ins.bytes + '</td><td style="color:' +
+            (ins.text.startsWith('UNKNOWN') ? '#facc15' : '#38bdf8') + ';">' + ins.text + '</td></tr>';
+        });
+        table.innerHTML = html + '</table>';
+      } catch (e) { log.style.color = '#f87171'; log.textContent = 'Errore: ' + e.message; }
+    }
+
+    // --- Header SNES ---
+    async function snesHeaderUI() {
+      const log = document.getElementById('snes-log');
+      const f = document.getElementById('snes-file').files[0];
+      if (!f) { log.style.color = '#f87171'; log.textContent = 'Seleziona una ROM SNES (.smc/.sfc).' ; return; }
+      log.style.color = '#9ca3af'; log.textContent = '⚡ Lettura header reale in corso…';
+      try {
+        const rom = await fileToBytes(f);
+        const res = await fetch('/api/snes/rom-header', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ romBase64: bytesToB64(rom) })
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+        log.style.color = data.checksumConsistent ? '#22c55e' : '#facc15';
+        log.textContent =
+          'Mappatura: ' + data.mapping + ' (header a ' + data.headerOffset + ')' +
+          '\\nTitolo: ' + (data.title || '(vuoto)') +
+          '\\nChipset: ' + data.chipset +
+          '\\nROM: ' + (data.romSize / 1024) + ' KB · SRAM: ' + (data.sramSize / 1024) + ' KB' +
+          '\\nRegione: ' + data.destination +
+          '\\nVersione: ' + data.version +
+          '\\nChecksum: ' + data.checksum + ' · Complement: ' + data.checksumComplement +
+          '\\n' + (data.checksumConsistent ? '✓ Coerenti (complement+checksum=0xFFFF): mappatura affidabile.' : '⚠ Non coerenti: mappatura stimata, potrebbe essere sbagliata.');
+      } catch (e) { log.style.color = '#f87171'; log.textContent = 'Errore: ' + e.message; }
+    }
+
+    // --- F3D: editor vertici + riserializzazione (round-trip 3D) ---
+    let f3dMesh = null;
+    function renderF3dVertexEditor(mesh) {
+      f3dMesh = mesh;
+      const wrap = document.getElementById('f3d-vtx-editor');
+      const table = document.getElementById('f3d-vtx-table');
+      wrap.style.display = 'block';
+      let html = '<table style="width:100%; font-size:11px; border-collapse:collapse;">' +
+        '<tr style="color:var(--text-muted); text-align:left;"><th>#</th><th>X</th><th>Y</th><th>Z</th><th>U</th><th>V</th></tr>';
+      mesh.vertices.slice(0, 16).forEach((v, i) => {
+        html += '<tr style="border-top:1px solid var(--border);"><td>' + i + '</td>' +
+          ['x','y','z','u','v'].map(k =>
+            '<td><input type="number" data-vtx="' + i + '" data-k="' + k + '" value="' + v[k] + '" style="width:56px; background:#05060b; border:1px solid var(--border); color:#fff; border-radius:3px; padding:2px;" onchange="f3dUpdateVtx(this)" /></td>'
+          ).join('') + '</tr>';
+      });
+      table.innerHTML = html + '</table>';
+    }
+    function f3dUpdateVtx(input) {
+      f3dMesh.vertices[Number(input.dataset.vtx)][input.dataset.k] = Number(input.value);
+    }
+    async function f3dSerializeUI() {
+      const log = document.getElementById('f3d-log');
+      const dl = document.getElementById('f3d-download');
+      dl.innerHTML = '';
+      if (!f3dMesh) return;
+      log.style.color = '#9ca3af'; log.textContent = '⚡ Riserializzazione reale in corso…';
+      try {
+        const res = await fetch('/api/n64/f3d/serialize-mesh', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vertices: f3dMesh.vertices, triangles: f3dMesh.triangles })
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+        log.style.color = '#22c55e';
+        log.textContent = '✓ Riserializzati ' + data.vertexCount + ' vertici reali (' + (data.vertexCount * 16) + ' byte) e display list da ' + (data.dlSize || 0) + ' byte.';
+        [['vtx_edited.bin', data.vtxBase64, '⬇ Scarica blob vertici modificato'],
+         ...(data.dlBase64 ? [['dl_rebuilt.bin', data.dlBase64, '⬇ Scarica display list ricostruita']] : [])]
+        .forEach(([name, b64, label]) => {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(new Blob([base64ToBytes(b64)], { type: 'application/octet-stream' }));
+          a.download = name;
+          a.textContent = label;
+          a.style.cssText = 'display:block;color:var(--accent);margin-top:6px;font-family:monospace;font-size:12px;';
+          dl.appendChild(a);
+        });
+      } catch (e) { log.style.color = '#f87171'; log.textContent = 'Errore: ' + e.message; }
+    }
+
+    // --- N64Recomp ---
+    async function loadRecompStatus() {
+      const el = document.getElementById('recomp-status');
+      try {
+        const res = await fetch('/api/recomp/status');
+        const data = await res.json();
+        el.innerHTML = data.installed
+          ? '<div class="mem-row"><span>N64Recomp</span><span class="val" style="color:#22c55e;">✓ ' + data.binaryPath + '</span></div>'
+          : '<div class="mem-row"><span>N64Recomp</span><span class="val" style="color:#f87171;">✗ non installato</span></div><div style="font-size:11px; color:var(--text-muted); margin-top:6px;">' + data.installHint + '</div>';
+      } catch (e) { el.textContent = 'Errore stato: ' + e.message; }
+    }
+    loadRecompStatus();
+
+    async function recompConfigUI() {
+      const log = document.getElementById('recomp-log');
+      const dl = document.getElementById('recomp-download');
+      dl.innerHTML = '';
+      const gameName = document.getElementById('recomp-game').value || 'game';
+      const entryHex = document.getElementById('recomp-entry').value.trim();
+      const entrypoint = entryHex ? parseInt(entryHex.replace(/^0x/i, ''), 16) : undefined;
+      log.style.color = '#9ca3af'; log.textContent = '⚡ Generazione recomp.toml reale…';
+      try {
+        const res = await fetch('/api/recomp/config', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gameName, entrypoint })
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+        log.style.color = '#22c55e';
+        log.textContent = '✓ recomp.toml generato (schema ufficiale Zelda64Recomp):\\n\\n' + data.recompToml;
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([data.recompToml], { type: 'text/plain' }));
+        a.download = 'recomp.toml';
+        a.textContent = '⬇ Scarica recomp.toml';
+        a.style.cssText = 'display:block;color:var(--accent);margin-top:8px;font-family:monospace;font-size:12px;';
+        dl.appendChild(a);
+      } catch (e) { log.style.color = '#f87171'; log.textContent = 'Errore: ' + e.message; }
+    }
+
     // --- Inspector header ROM N64 ---
     async function inspectRomHeader() {
       const log = document.getElementById('hdr-log');
@@ -1131,6 +1565,232 @@ const server = Bun.serve({
         const bytes = new Uint8Array(Buffer.from(body.bytesBase64 || "", "base64"));
         const header = parseN64RomHeader(bytes);
         return new Response(JSON.stringify(header), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 13b. Yay0 — ricompressione reale (greedy LZ77, valida bit-per-bit per
+    // il decompressore sopra: chiude il round-trip modifica→repack).
+    if (url.pathname === "/api/n64/yay0/compress" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const data = new Uint8Array(Buffer.from(body.dataBase64 || "", "base64"));
+        if (data.length === 0) return new Response(JSON.stringify({ error: "dataBase64 vuoto." }), { status: 400, headers });
+        const out = yay0Compress(data);
+        return new Response(JSON.stringify({ compressedBase64: Buffer.from(out).toString("base64"), compressedSize: out.length }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
+    }
+
+    // 13c. Checksum CRC header ROM N64 — calcolo/verifica reale secondo il
+    // chip CIC rilevato dall'IPL3 (algoritmi trascritti da sm64tools MIT e
+    // n64checksum CC0). Serve per rendere bootabile una ROM modificata.
+    if (url.pathname === "/api/n64/crc/compute" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const rom = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        const result = computeN64Checksums(rom, body.cic as CicChip | undefined);
+        return new Response(JSON.stringify({
+          cic: result.cic,
+          crc1: "0x" + result.crc1.toString(16).toUpperCase(),
+          crc2: "0x" + result.crc2.toString(16).toUpperCase(),
+          storedCrc1: "0x" + result.storedCrc1.toString(16).toUpperCase(),
+          storedCrc2: "0x" + result.storedCrc2.toString(16).toUpperCase(),
+          valid: result.valid,
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 13d. Checksum CRC — fix reale: ricalcola e riscrive CRC1/CRC2
+    // nell'header, ritornando la ROM corretta al client (mai salvata su disco).
+    if (url.pathname === "/api/n64/crc/fix" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        if (!verifyToken(body.token, body.fullName)) {
+          return new Response(JSON.stringify({ error: "Dichiarazione non valida o mancante (stesso gate del patcher)." }), { status: 403, headers });
+        }
+        const rom = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        const { rom: fixed, result } = fixN64Checksums(rom, body.cic as CicChip | undefined);
+        return new Response(JSON.stringify({
+          cic: result.cic,
+          crc1: "0x" + result.crc1.toString(16).toUpperCase(),
+          crc2: "0x" + result.crc2.toString(16).toUpperCase(),
+          wasValid: result.valid,
+          romBase64: Buffer.from(fixed).toString("base64"),
+          size: fixed.length,
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 13e. F3D — parsing reale di una display list Fast3D (formato delle
+    // geometrie 3D, opcode da n64decomp/sm64 CC0) con estrazione mesh
+    // quando il client fornisce anche il blob vertici.
+    if (url.pathname === "/api/n64/f3d/parse" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const dl = new Uint8Array(Buffer.from(body.dlBase64 || "", "base64"));
+        if (dl.length < 8) return new Response(JSON.stringify({ error: "dlBase64 troppo corto (una display list ha comandi da 8 byte)." }), { status: 400, headers });
+        const { commands, endedAt } = parseF3dDisplayList(dl);
+        const vtx = body.vtxBase64 ? new Uint8Array(Buffer.from(body.vtxBase64, "base64")) : null;
+        const meshResult = vtx ? extractF3dMesh(dl, vtx) : null;
+        return new Response(JSON.stringify({
+          commands,
+          endedAt,
+          ...(meshResult ? { mesh: meshResult.mesh, warnings: meshResult.warnings } : {}),
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 13f. Scanner nativo blocchi MIO0/Yay0 di una ROM fornita dal client —
+    // trova gli offset reali senza doverli indovinare a mano.
+    if (url.pathname === "/api/n64/split/scan" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const rom = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        if (rom.length < 0x400) return new Response(JSON.stringify({ error: "ROM troppo corta per lo scanner." }), { status: 400, headers });
+        const sections = scanRomSections(rom);
+        return new Response(JSON.stringify({
+          sections: sections.map((s) => ({
+            offset: "0x" + s.offset.toString(16).toUpperCase(),
+            format: s.format,
+            compressedSize: s.compressedSize,
+            decompressedSize: s.decompressedSize,
+          })),
+          count: sections.length,
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 13g. splat — stato reale dell'installazione.
+    if (url.pathname === "/api/splat/status" && req.method === "GET") {
+      const s = detectSplat();
+      return new Response(JSON.stringify(s), { headers });
+    }
+
+    // 13h. splat — split reale via subprocess (se installato), in dir
+    // temporanea cancellata subito dopo. Nessuna ROM persistita.
+    if (url.pathname === "/api/splat/split" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        if (!verifyToken(body.token, body.fullName)) {
+          return new Response(JSON.stringify({ error: "Dichiarazione non valida o mancante (stesso gate del patcher)." }), { status: 403, headers });
+        }
+        const rom = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        if (rom.length < 0x400) return new Response(JSON.stringify({ error: "ROM troppo corta." }), { status: 400, headers });
+        const result = runSplatSplit(rom);
+        return new Response(JSON.stringify(result), { status: result.success ? 200 : 502, headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
+    }
+
+    // 13i. N64Recomp — stato reale + generazione recomp.toml + run reale.
+    if (url.pathname === "/api/recomp/status" && req.method === "GET") {
+      return new Response(JSON.stringify(detectN64Recomp()), { headers });
+    }
+    if (url.pathname === "/api/recomp/config" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const toml = generateRecompToml({
+          gameName: body.gameName || "game",
+          entrypoint: body.entrypoint,
+          elfFileName: body.elfFileName,
+          symbolsFileName: body.symbolsFileName,
+          stubs: body.stubs,
+          ignored: body.ignored,
+        });
+        return new Response(JSON.stringify({ recompToml: toml }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+    if (url.pathname === "/api/recomp/run" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        if (!verifyToken(body.token, body.fullName)) {
+          return new Response(JSON.stringify({ error: "Dichiarazione non valida o mancante (stesso gate del patcher)." }), { status: 403, headers });
+        }
+        const rom = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        const elf = body.elfBase64 ? new Uint8Array(Buffer.from(body.elfBase64, "base64")) : undefined;
+        const toml = body.recompToml || generateRecompToml({ gameName: body.gameName || "game", entrypoint: body.entrypoint });
+        const result = runN64Recomp(toml, rom, elf, body.symbolsToml);
+        return new Response(JSON.stringify(result), { status: result.success ? 200 : 502, headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
+    }
+
+    // 13l. Disassembler MIPS R4300i reale (subset documentato; istruzioni
+    // non mappate → UNKNOWN onesto con word grezza).
+    if (url.pathname === "/api/n64/mips/disassemble" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const data = new Uint8Array(Buffer.from(body.dataBase64 || "", "base64"));
+        if (data.length < 4) return new Response(JSON.stringify({ error: "Servono almeno 4 byte (una word MIPS)." }), { status: 400, headers });
+        const base = Number(body.baseAddress) || 0x80246000;
+        const max = Math.min(Number(body.max) || 500, 5000);
+        const instructions = disassembleMips(data, base, max);
+        return new Response(JSON.stringify({
+          instructions,
+          count: instructions.length,
+          unknownCount: instructions.filter((i) => i.text.startsWith("UNKNOWN")).length,
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 13m. F3D — serializzazione mesh→byte (round-trip editor 3D): blob
+    // vertici riserializzato e, se forniti i triangoli, display list ricostruita.
+    if (url.pathname === "/api/n64/f3d/serialize-mesh" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const vertices = body.vertices || [];
+        if (vertices.length < 1) return new Response(JSON.stringify({ error: "Serve almeno un vertice." }), { status: 400, headers });
+        const vtxBlob = serializeF3dVertices(vertices);
+        let dlBase64: string | undefined;
+        if (body.triangles) {
+          const dl = buildF3dDisplayList({ vertices, triangles: body.triangles, textureImages: [] }, Number(body.vtxAddress) || 0x04000000);
+          dlBase64 = Buffer.from(dl).toString("base64");
+          return new Response(JSON.stringify({
+            vtxBase64: Buffer.from(vtxBlob).toString("base64"),
+            vertexCount: vertices.length,
+            dlBase64,
+            dlSize: dl.length,
+          }), { headers });
+        }
+        return new Response(JSON.stringify({
+          vtxBase64: Buffer.from(vtxBlob).toString("base64"),
+          vertexCount: vertices.length,
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 13n. Inspector header ROM SNES (formato hardware generico, prova le
+    // tre mappature LoROM/HiROM/ExHiROM e valida col complement checksum).
+    if (url.pathname === "/api/snes/rom-header" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const rom = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        const header = parseSnesRomHeader(rom);
+        return new Response(JSON.stringify({
+          ...header,
+          headerOffset: "0x" + header.headerOffset.toString(16).toUpperCase(),
+          checksum: "0x" + header.checksum.toString(16).toUpperCase(),
+          checksumComplement: "0x" + header.checksumComplement.toString(16).toUpperCase(),
+        }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
       }

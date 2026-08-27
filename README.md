@@ -270,6 +270,66 @@ zero → byte extra dalla sezione chunk, count = extra+18, verificato
 anche via richiesta HTTP end-to-end reale sul server. Solo decompressione:
 nessun encoder Yay0 disponibile in questa versione.
 
+### 9. Ciclo completo estrazione → modifica → repack (v1.3)
+
+Chiude il ciclo che prima costringeva l'utente a indovinare offset e a
+rinunciare al ricalcolo dei checksum. Sei nuovi moduli, tutti con test
+reali (96/96) e verifica end-to-end via HTTP:
+
+- **Fix checksum CRC header** (`src/n64_crc.ts`) — il PIF verifica i CRC
+  a offset 0x10/0x14 su 0x100000 byte di ROM: senza ricalcolo una ROM
+  modificata NON boota. Rileva il chip CIC dal CRC32 dell'IPL3 (tabella
+  usata realmente da ethteck/splat, MIT) e implementa l'algoritmo della
+  famiglia 6102 (trascritto da `sm64_calc_checksums` in
+  queueRAM/sm64tools, MIT — a sua volta derivato dal boot code SM64) e
+  la variante 6105 (da Dragorn421/n64checksum, CC0).
+  `POST /api/n64/crc/compute` verifica, `POST /api/n64/crc/fix`
+  ricalcola e riscrive (dietro lo stesso gate di dichiarazione del
+  patcher). La validazione finale dell'algoritmo avviene sulla ROM
+  dell'utente non modificata: deve risultare `valid:true` (nessuna ROM
+  reale è stata processata durante lo sviluppo, per policy).
+- **Encoder Yay0** (`yay0Compress` in `src/n64_yay0.ts`) — greedy LZ77
+  con la stessa semantica bit-per-bit del decompressore esistente
+  (match 3..17 byte, conteggio esteso 18..273 via byte aggiuntivo,
+  finestra 4096): chiude il round-trip decomprimi→modifica→ricomprimi.
+  Verificato con round-trip su pattern ripetitivi, run RLE > 273 byte,
+  entropia alta, input vuoto/1 byte — da test e via HTTP.
+- **Parser display list F3D** (`src/n64_f3d.ts`) — la display list è il
+  formato reale delle geometrie 3D N64 (comandi Gfx da 8 byte eseguiti
+  dal RSP). Tabella opcode presa verbatim da `include/PR/gbi.h` di
+  n64decomp/sm64 (**CC0, public domain**), ramo F3D classico (il
+  microcodice di SM64). Estrae vertici (layout `Vtx_tn` a 16 byte),
+  triangoli (`TRI1`, indici codificati ×10), riferimenti texture
+  (`SETTIMG`/`SETTILESIZE`). La UI disegna il **wireframe reale su
+  canvas** lato client (proiezione prospettica autocentrata) — nessun
+  rendering simulato. Opcode non mappati → `UNKNOWN` con word grezzi:
+  i comandi sono a lunghezza fissa, quindi nessun disallineamento.
+- **Scanner blocchi ROM** (`src/n64_split.ts`) — trova i blocchi
+  MIO0/Yay0 reali (offset, dimensioni) validando gli header secondo i
+  layout dei codec veri, così l'utente non deve più indovinare offset.
+  Nota onesta: la prima versione dello scanner leggeva MIO0 con un
+  layout inesistente — bug colto dal test di round-trip contro il
+  nostro stesso encoder MIO0, corretto prima del commit.
+- **Orchestrazione splat** — se `splat` è installato (`pip install
+  splat`, MIT) `POST /api/splat/split` esegue lo splitter REALE usato
+  dai progetti di decompilazione sm64/oot/mm: `create_config` (rileva
+  da solo entrypoint/CIC/header encoding) + `split`, in directory
+  temporanea cancellata subito dopo (nessuna ROM persistita). I file
+  prodotti tornano al client in base64.
+- **Orchestrazione N64Recomp** (`src/recomp.ts`) — non reimplementa
+  N64Recomp (C++ con rabbitizer/ELFIO/toml11): lo orchestra col pattern
+  già usato per i toolchain devkitPro. Rileva il binario installato,
+  genera un `recomp.toml` reale (schema letto dall'esempio ufficiale
+  Zelda64Recomp `us.rev1.toml`: sezione `[input]` + `[patches]` con
+  stubs/ignored) e, se il binario esiste, esegue la ricompilazione in
+  dir temporanea. Onestamente riporta "non installato" altrimenti, con
+  le istruzioni di build reali.
+
+`GET /api/splat/status` e `GET /api/recomp/status` dicono la verità su
+cosa è installato su questa macchina (stesso spirito di
+`/api/toolchains`); al momento entrambi risultano assenti e i pannelli
+UI lo mostrano esplicitamente invece di fingere.
+
 ## Avvio
 
 ```bash
@@ -306,6 +366,37 @@ istruzioni di installazione reali invece di un falso successo.
 - `POST /api/n64/texture/decode` — `{ width, height, format, dataBase64,
   paletteBase64? }` → `{ width, height, rgbaBase64 }` decodificati realmente.
 - `POST /api/n64/yay0/decompress` — `{ dataBase64 }` → decompressione Yay0 reale.
+- `POST /api/n64/yay0/compress` — `{ dataBase64 }` → ricompressione Yay0 reale
+  (greedy LZ77, round-trip verificato bit-per-bit col decompressore).
+- `POST /api/n64/crc/compute` — `{ romBase64, cic? }` → verifica reale dei
+  checksum CRC dell'header (CIC rilevato dall'IPL3 o forzato).
+- `POST /api/n64/crc/fix` — `{ fullName, token, romBase64, cic? }` →
+  ricalcola e riscrive CRC1/CRC2 (richiede token di dichiarazione).
+- `POST /api/n64/f3d/parse` — `{ dlBase64, vtxBase64? }` → comandi display
+  list F3D interpretati + mesh (vertici/triangoli) + riferimenti texture.
+- `POST /api/n64/split/scan` — `{ romBase64 }` → blocchi MIO0/Yay0 reali
+  trovati dallo scanner nativo (offset, dimensioni).
+- `GET /api/splat/status` — stato reale dell'installazione di splat.
+- `POST /api/splat/split` — `{ fullName, token, romBase64 }` → split reale
+  via splat (se installato), file prodotti restituiti in base64.
+- `GET /api/recomp/status` — stato reale dell'installazione di N64Recomp.
+- `POST /api/recomp/config` — `{ gameName, entrypoint?, stubs?, ignored? }` →
+  `recomp.toml` reale (schema ufficiale Zelda64Recomp).
+- `POST /api/recomp/run` — `{ fullName, token, romBase64, elfBase64?,
+  recompToml? }` → ricompilazione reale via N64Recomp (se installato).
+- `POST /api/n64/mips/disassemble` — `{ dataBase64, baseAddress?, max? }` →
+  disassemblaggio MIPS R4300i reale (subset MIPS I/III; FPU/COP1 e 64-bit
+  rare → UNKNOWN onesto con word grezza, mai mnemonici inventati).
+- `POST /api/n64/f3d/serialize-mesh` — `{ vertices, triangles?, vtxAddress? }`
+  → round-trip editor 3D: blob vertici riserializzato (16 B/vertex Vtx_tn)
+  e display list VTX+TRI1+ENDDL ricostruita con l'encoding classico di
+  gbi.h (max 16 vertici per VTX: limite hardware dichiarato, errore esplicito
+  oltre).
+- `POST /api/snes/rom-header` — `{ romBase64 }` → header SNES reale: prova
+  le tre mappature (LoROM 0x7FC0 / HiROM 0xFFC0 / ExHiROM 0x40FFC0) e
+  seleziona quella con complement+checksum=0xFFFF coerente. Primo parser
+  non-N64 del progetto (spec: layout header SNES pubblico, cross-riferito
+  a rom-properties come documento di formato, GPL, mai codice copiato).
 
 ## Test automatizzati
 

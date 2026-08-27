@@ -341,6 +341,26 @@ Apri `http://localhost:3014`. Se un toolchain non è installato, ogni
 tentativo di compilazione per quella piattaforma risponde onestamente con le
 istruzioni di installazione reali invece di un falso successo.
 
+### UI v1.4 — studio applicativo (non più pila di pannelli)
+
+Ridisegnata dopo feedback reale d'uso. La vecchia UI era una colonna di
+pannelli indipendenti che richiedevano ciascuno il proprio upload; ora:
+
+- **shell con navigazione laterale** a 9 viste: ROM & Identificazione,
+  Split & Compressione, Texture & 3D, Level Script, Disassembler,
+  Patcher & CRC, N64Recomp, Compilatore Homebrew, Setup & Toolchain;
+- **stato condiviso**: la ROM si carica UNA volta (drag&drop o click,
+  anche ZIP) e ogni tool ci lavora sopra senza ri-caricarla; i chip in
+  alto mostrano ROM corrente, blob corrente e stato dichiarazione;
+- **blob corrente**: ogni decompressione (scanner blocchi, MIO0/Yay0
+  manuali) produce il "blob corrente" che le viste a valle (texture,
+  level script, disassembler, ricompressione) consumano direttamente;
+- **conversione automatica .v64/.n64 → .z64** all'atto del caricamento
+  (`POST /api/rom/convert`, stessa classe non-invasiva dell'identify);
+- **barra del workflow** (carica → identifica → prepara → modifica →
+  esporta) che si illumina man mano che la pipeline avanza;
+- barra di stato inferiore con l'ultima operazione reale effettuata.
+
 ## API
 
 - `POST /api/build` — `{ platform, sourceCode }` → compila/linka/pacchettizza

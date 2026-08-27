@@ -397,6 +397,16 @@ istruzioni di installazione reali invece di un falso successo.
   seleziona quella con complement+checksum=0xFFFF coerente. Primo parser
   non-N64 del progetto (spec: layout header SNES pubblico, cross-riferito
   a rom-properties come documento di formato, GPL, mai codice copiato).
+- `POST /api/rom/identify` — `{ romBase64 }` → identificazione automatica
+  della console da un file ROM **o da uno ZIP** (estratto realmente in
+  memoria da un lettore ZIP nativo senza dipendenze, metodi stored+deflate).
+  Riconosce N64 (z64/v64/n64 con conversione automatica a z64), SNES, NES,
+  GB/GBC, GBA, NDS, Mega Drive, GameCube, Wii. Le voci non-ROM dentro lo
+  ZIP (readme ecc.) vengono marcate "ignorata", mai far fallire il resto.
+- `POST /api/rom/prepare` — `{ fullName, token, romBase64 }` → unzip +
+  identificazione + restituzione della ROM N64 pronta per gli altri tool
+  (CRC/split/level-script), convertita in .z64 se era .v64/.n64 (dietro
+  gate di dichiarazione).
 
 ## Test automatizzati
 

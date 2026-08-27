@@ -19,6 +19,8 @@ import { detectN64Recomp, generateRecompToml, runN64Recomp } from "./src/recomp"
 import { disassembleMips } from "./src/mips_disasm";
 import { parseSnesRomHeader } from "./src/snes_rom_header";
 import { serializeF3dVertices, buildF3dDisplayList } from "./src/n64_f3d";
+import { identifyRomFile, identifyConsole } from "./src/rom_identify";
+import { unzip } from "./src/zip_reader";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
 import { parseN64RomHeader } from "./src/n64_rom_header";
 import { decodeN64Texture, requiredByteLength, BITS_PER_PIXEL, type N64TextureFormat } from "./src/n64_texture";
@@ -349,6 +351,22 @@ int main() {
         <div class="console-logs" id="patch-log" style="margin-top:10px;">In attesa...</div>
         <div id="patch-download"></div>
       </div>
+    </div>
+
+    <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px; border: 1px solid var(--primary);">
+      <h2>🕹️ Riconoscimento automatico ROM (anche dentro file ZIP)</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-top:-4px;">
+        Carica una ROM nuda o un file .zip: l'app estrae realmente l'archivio in memoria (nessun file salvato),
+        riconosce la console dai magic header (N64 z64/v64/n64, SNES, NES, GB/GBC, GBA, NDS, Mega Drive, GameCube, Wii)
+        e converte automaticamente le ROM N64 .v64/.n64 in .z64 pronte per gli altri tool.
+      </p>
+      <input type="file" id="id-file" accept=".zip,.z64,.v64,.n64,.smc,.sfc,.nes,.gb,.gbc,.gba,.nds,.md,.bin,.iso,.gcm" style="margin-bottom:8px;" />
+      <div style="display:flex; gap:10px;">
+        <button class="btn-action btn-compile" onclick="romIdentifyUI()">Identifica automaticamente</button>
+        <button class="btn-action" style="background:#141929;color:#fff;border:1px solid var(--border);" onclick="romPrepareUI()">Prepara per i tool (unzip + converti z64)</button>
+      </div>
+      <div class="console-logs" id="id-log" style="margin-top:10px; height:auto; max-height:220px;">In attesa… ("Prepara" richiede la dichiarazione completata)</div>
+      <div id="id-download"></div>
     </div>
 
     <div class="sidebar" style="grid-column: 1 / -1; margin: 0 24px 24px;">
@@ -880,6 +898,70 @@ int main() {
         log.style.color = '#f87171';
         log.textContent = 'Errore: ' + e.message;
       }
+    }
+
+    // --- Identificazione automatica ROM / ZIP ---
+    async function romIdentifyUI() {
+      const log = document.getElementById('id-log');
+      const dl = document.getElementById('id-download');
+      dl.innerHTML = '';
+      const f = document.getElementById('id-file').files[0];
+      if (!f) { log.style.color = '#f87171'; log.textContent = 'Seleziona un file ROM o ZIP.'; return; }
+      log.style.color = '#9ca3af'; log.textContent = '⚡ Analisi in corso (unzip reale se serve)...';
+      try {
+        const bytes = await fileToBytes(f);
+        const res = await fetch('/api/rom/identify', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ romBase64: bytesToB64(bytes) })
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+        log.style.color = data.entries.some(e => e.console !== 'sconosciuta') ? '#22c55e' : '#facc15';
+        log.textContent = (data.isArchive ? 'ZIP con ' + data.entries.length + ' voci estratte realmente:' : 'File singolo:');
+        data.entries.forEach(e => {
+          const color = e.confidence === 'magic' ? '#22c55e' : (e.console === 'sconosciuta' ? '#f87171' : '#facc15');
+          const row = document.createElement('div');
+          row.style.cssText = 'margin-top:6px; font-size:12px;';
+          row.innerHTML = '<strong style="color:' + color + ';">' + e.console + '</strong> · ' + e.format +
+            ' · ' + (e.size / 1024).toFixed(0) + ' KB' + (data.isArchive ? ' · ' + e.name : '') +
+            '<div style="color:var(--text-muted); font-size:11px;">' + e.detail + '</div>';
+          log.appendChild(row);
+        });
+      } catch (e) { log.style.color = '#f87171'; log.textContent = 'Errore: ' + e.message; }
+    }
+
+    async function romPrepareUI() {
+      const log = document.getElementById('id-log');
+      const dl = document.getElementById('id-download');
+      dl.innerHTML = '';
+      const f = document.getElementById('id-file').files[0];
+      if (!f) { log.style.color = '#f87171'; log.textContent = 'Seleziona un file ROM o ZIP.'; return; }
+      if (!declarationToken) { log.style.color = '#f87171'; log.textContent = '✗ Completa prima la dichiarazione nel pannello patcher (stesso gate).'; return; }
+      log.style.color = '#9ca3af'; log.textContent = '⚡ Unzip + identificazione + conversione in corso...';
+      try {
+        const bytes = await fileToBytes(f);
+        const res = await fetch('/api/rom/prepare', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fullName: declarationName, token: declarationToken, romBase64: bytesToB64(bytes) })
+        });
+        const data = await res.json();
+        if (data.error) { log.style.color = '#f87171'; log.textContent = '✗ ' + data.error; return; }
+        if (!data.prepared) {
+          log.style.color = '#facc15';
+          log.textContent = 'Nessuna ROM N64 trovata nel file (voci identificate: ' +
+            data.entries.map(e => e.console).join(', ') + '). "Prepara" estrae e converte solo per N64.';
+          return;
+        }
+        log.style.color = '#22c55e';
+        log.textContent = '✓ ' + (data.isArchive ? 'Estratta da ZIP: ' + data.prepared.name + '. ' : '') +
+          data.prepared.note + ' — ' + (data.prepared.size / 1024 / 1024).toFixed(1) + ' MB pronti per CRC/split/level-script.';
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([base64ToBytes(data.prepared.romBase64)], { type: 'application/octet-stream' }));
+        a.download = 'rom_prepared.z64';
+        a.textContent = '⬇ Scarica ROM preparata (.z64)';
+        a.style.cssText = 'display:block;color:var(--accent);margin-top:8px;font-family:monospace;font-size:12px;';
+        dl.appendChild(a);
+      } catch (e) { log.style.color = '#f87171'; log.textContent = 'Errore: ' + e.message; }
     }
 
     // --- Fix checksum CRC N64 ---
@@ -1790,6 +1872,71 @@ const server = Bun.serve({
           headerOffset: "0x" + header.headerOffset.toString(16).toUpperCase(),
           checksum: "0x" + header.checksum.toString(16).toUpperCase(),
           checksumComplement: "0x" + header.checksumComplement.toString(16).toUpperCase(),
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 13o. Identificazione automatica ROM: accetta ROM nuda o ZIP (estratto
+    // realmente in memoria), riconosce la console dai magic header e
+    // converte automaticamente N64 .v64/.n64 in .z64 per i nostri tool.
+    if (url.pathname === "/api/rom/identify" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const data = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        if (data.length < 16) return new Response(JSON.stringify({ error: "File troppo corto (minimo 16 byte)." }), { status: 400, headers });
+        const result = identifyRomFile(data);
+        // la ROM convertita in z64 torna come base64 solo se richiesta
+        // (payload potenzialmente grande)
+        return new Response(JSON.stringify({
+          isArchive: result.isArchive,
+          entries: result.entries.map((e) => ({
+            name: e.name,
+            size: e.size,
+            console: e.console,
+            format: e.format,
+            confidence: e.confidence,
+            detail: e.detail,
+          })),
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 13p. Unzip + identificazione + conversione z64 in un colpo solo: per
+    // ZIP o ROM N64 non-z64 restituisce anche i byte pronti per gli altri
+    // tool (crc/split/level-script), sempre dietro gate di dichiarazione.
+    if (url.pathname === "/api/rom/prepare" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        if (!verifyToken(body.token, body.fullName)) {
+          return new Response(JSON.stringify({ error: "Dichiarazione non valida o mancante (stesso gate del patcher)." }), { status: 403, headers });
+        }
+        const data = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        const result = identifyRomFile(data);
+        // seleziona la prima ROM N64 trovata (convertita se serve) o la
+        // prima ROM identificata con confianza "magic"
+        let prepared = null;
+        const base = result.isArchive
+          ? unzip(data)
+          : [{ name: "(file caricato)", data }];
+        for (const entry of base) {
+          if (entry.data.length < 16) continue; // voci non-ROM (readme ecc.) saltate
+          const id = identifyConsole(entry.data);
+          if (id.console === "Nintendo 64" && id.convertedZ64) {
+            prepared = { name: entry.name, romBase64: Buffer.from(id.convertedZ64).toString("base64"), size: id.convertedZ64.length, note: "v64/n64 convertita in z64" };
+            break;
+          }
+          if (id.console === "Nintendo 64" && !prepared) {
+            prepared = { name: entry.name, romBase64: Buffer.from(entry.data).toString("base64"), size: entry.data.length, note: "z64 già pronta" };
+          }
+        }
+        return new Response(JSON.stringify({
+          isArchive: result.isArchive,
+          entries: result.entries.map((e) => ({ name: e.name, console: e.console, format: e.format, confidence: e.confidence })),
+          prepared,
         }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });

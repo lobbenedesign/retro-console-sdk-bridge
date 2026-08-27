@@ -1,0 +1,6 @@
+#!/bin/bash
+# Eseguibile del bundle "Retro Studio.app".
+# Apre il launcher .command reale tramite Terminal: i processi avviati da
+# LaunchServices senza firma/notarizzazione non hanno accesso TCC alle
+# cartelle utente (es. Desktop), Terminal sì — nessuna scorciatoia silenziosa.
+open "$(dirname "$0")/../../../../launch/Avvia Retro Studio.command"

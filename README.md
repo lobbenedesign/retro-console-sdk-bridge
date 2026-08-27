@@ -337,12 +337,27 @@ bun install
 bun start
 ```
 
-Apri `http://localhost:3014`. Se un toolchain non è installato, ogni
+Oppure, **doppio clic** (cartella `launch/`):
+
+- **macOS**: `Retro Studio.app` (bundle .app) oppure `Avvia Retro Studio.command`
+  — entrambi avviano il server reale in Terminal e aprono il browser.
+  Nota tecnica onesta: il bundle .app non è firmato/notarizzato, quindi per
+  via del TCC di macOS si limita ad aprire il `.command` in Terminal (che ha
+  i permessi sulle cartelle utente): funzionalità identica, zero problemi
+  di permessi. Se macOS al primo avvio chiede conferma per eseguire file
+  scaricati, autorizza da Impostazioni → Privacy e sicurezza.
+- **Windows**: `Avvia Retro Studio.bat` — avvia il server in una finestra
+  dedicata e apre il browser (scritto per Windows ma verificato solo a
+  livello di sintassi: nessuna macchina Windows in questa sessione).
+
+Entrambi i launcher, se Bun o le dipendenze mancano, lo dicono davvero con
+le istruzioni di installazione reali invece di fallire in silenzio; se il
+server è già attivo si limitano ad aprire il browser. Server già attivo su
+`http://localhost:3014`. Se un toolchain non è installato, ogni
 tentativo di compilazione per quella piattaforma risponde onestamente con le
 istruzioni di installazione reali invece di un falso successo.
 
 ### UI v1.4 — studio applicativo (non più pila di pannelli)
-
 Ridisegnata dopo feedback reale d'uso. La vecchia UI era una colonna di
 pannelli indipendenti che richiedevano ciascuno il proprio upload; ora:
 

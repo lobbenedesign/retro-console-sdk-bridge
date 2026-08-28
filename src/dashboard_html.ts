@@ -85,6 +85,19 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
   .plat { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:10px; cursor:pointer; text-align:left; color:var(--tx); font-size:12.5px; font-weight:600; }
   .plat.active { border-color:var(--pri); box-shadow:0 0 0 1px var(--pri); }
   .plat small { display:block; color:var(--mut); font-weight:400; margin-top:2px; }
+  /* ---------- modale onboarding toolchain ---------- */
+  .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.75); backdrop-filter:blur(3px);
+    display:flex; align-items:center; justify-content:center; z-index:100; padding:20px; }
+  .modal { background:var(--panel); border:1px solid var(--pri); border-radius:14px; max-width:680px; width:100%;
+    max-height:88vh; overflow-y:auto; padding:24px; box-shadow:0 20px 60px rgba(0,0,0,.7); }
+  .modal h1 { font-size:18px; }
+  .tc-row { display:flex; flex-direction:column; gap:6px; background:var(--panel2); border:1px solid var(--line);
+    border-radius:10px; padding:12px 14px; margin-top:10px; }
+  .tc-row .cmd { display:flex; gap:8px; align-items:center; }
+  .tc-row code { flex:1; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px 10px;
+    font-family:ui-monospace,monospace; font-size:12px; color:#38bdf8; word-break:break-all; }
+  .ok-note { color:var(--ok); font-size:13px; }
+  .warn-note { color:var(--warn); font-size:13px; }
 </style>
 </head>
 <body>
@@ -385,6 +398,27 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
 </div>
 
 <div class="statusbar" id="statusbar">Pronto.</div>
+
+<!-- Modale onboarding: rileva i toolchain mancanti e guida l'installazione reale -->
+<div class="modal-overlay" id="onboard-overlay" style="display:none">
+  <div class="modal">
+    <h1>⚙️ Configura i toolchain reali (una volta sola)</h1>
+    <p class="sub" style="margin-bottom:6px">Questo studio usa <b>compilatori e SDK reali</b>, installati sul tuo computer:
+      niente è simulato. Su questa macchina alcuni mancano ancora — ecco cosa puoi fare con o senza di essi.</p>
+    <p class="ok-note">✅ Funziona SUBITO, senza installare nulla: identificazione ROM (anche ZIP), estrazione e
+      decompressione MIO0/Yay0, level script, texture, mesh 3D F3D, disassembler, patcher IPS/BPS,
+      fix checksum N64/Genesis, scaffolding progetti.</p>
+    <p class="warn-note" style="margin-top:4px">⚠️ Serve il toolchain per: compilare homebrew per la piattaforma
+      corrispondente, split completo con splat, ricompilazione N64Recomp.</p>
+    <div id="onboard-missing"></div>
+    <div class="row" style="margin-top:18px; justify-content:flex-end">
+      <button class="btn dark" onclick="hideOnboard()">Continua senza installare (riappare al prossimo avvio)</button>
+      <button class="btn purple" onclick="hideOnboard(true)">Ho installato tutto, non mostrarla più</button>
+    </div>
+    <p class="muted" style="margin:10px 0 0">Stato sempre visibile in ⚙️ Setup &amp; Toolchain. La modale riappare a ogni
+      avvio finché manca qualcosa (o finché non scegli di non vederla più).</p>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -918,6 +952,68 @@ loadSetup();
 
 refreshChips();
 setStatus("Pronto. Inizia caricando una ROM o uno ZIP dalla vista ROM.");
+
+// ================= modale onboarding toolchain =================
+// Comandi di installazione REALI (fonti: README dei rispettivi progetti).
+const INSTALL_CMDS = {
+  snes:      ["brew install wla-dx", "wla-65816"],
+  n64:       ["git clone https://github.com/DragonMinded/libdragon && cd libdragon && ./build", "mips64-elf-gcc"],
+  genesis:   ["brew install sgdk  # oppure: scarica la release da github.com/Stephane-D/SGDK ed esporta GDK=/percorso", "SGDK"],
+  dreamcast: ["# build pesante (ore): segui github.com/KallistiOS/KallistiOS (dcchain)", "KallistiOS"],
+  psp:       ["# segui github.com/pspdev/pspdev (toolchain PSPSDK reale)", "psp-config"],
+  splat:     ["pip install splat", "splat"],
+  n64recomp: ["git clone --recurse-submodules https://github.com/N64Recomp/N64Recomp && cmake -B build -S N64Recomp && cmake --build build", "N64Recomp"],
+};
+const TOOL_LABELS = {
+  snes: "SNES — compilazione homebrew (WLA-DX)", n64: "N64 — compilazione homebrew (libdragon)",
+  genesis: "Sega Mega Drive — compilazione (SGDK)", dreamcast: "Dreamcast — compilazione (KallistiOS)",
+  psp: "PSP — compilazione (pspdev)", splat: "Split ROM completo (splat)", n64recomp: "Ricompilazione statica (N64Recomp)",
+};
+
+async function checkOnboarding() {
+  // una volta per sessione: se l'utente l'ha chiusa con "non mostrarla più"
+  // (localStorage) o tutto è installato, non appare
+  if (localStorage.getItem("rcsb-onboard-dismiss") === "all") return;
+
+  const missing = [];
+  try {
+    const tc = await (await fetch("/api/toolchains")).json();
+    for (const [p, i] of Object.entries(tc)) if (!i.detected) missing.push(p);
+    const ex = await (await fetch("/api/toolchains/extra")).json();
+    for (const [p, i] of Object.entries(ex)) if (!i.detected) missing.push(p);
+    const sp = await (await fetch("/api/splat/status")).json();
+    if (!sp.installed) missing.push("splat");
+    const rc = await (await fetch("/api/recomp/status")).json();
+    if (!rc.installed) missing.push("n64recomp");
+  } catch (e) { return; }
+
+  if (missing.length === 0) return; // tutto installato: nessuna modale
+
+  const box = $("onboard-missing");
+  box.innerHTML = "<h2 style='font-size:12px; text-transform:uppercase; letter-spacing:.8px; margin:16px 0 4px; color:var(--warn)'>Manca" + (missing.length > 1 ? "no" : "") + " su questa macchina (" + missing.length + ")</h2>";
+  missing.forEach((m, idx) => {
+    const row = document.createElement("div");
+    row.className = "tc-row";
+    const cmd = INSTALL_CMDS[m] ? INSTALL_CMDS[m][0] : "(vedi vista Setup)";
+    row.innerHTML = "<strong style='font-size:13px'>" + (TOOL_LABELS[m] || m) + "</strong>" +
+      '<div class="cmd"><code>' + cmd.replace(/</g, "&lt;") + '</code>' +
+      '<button class="btn dark mini" onclick="copyCmd(this)">Copia</button></div>';
+    box.appendChild(row);
+  });
+  $("onboard-overlay").style.display = "flex";
+  setStatus("onboarding: " + missing.length + " toolchain mancanti (vedi modale / vista Setup)");
+}
+
+function copyCmd(btn) {
+  navigator.clipboard.writeText(btn.previousElementSibling.textContent)
+    .then(() => { btn.textContent = "✓ Copiato"; setTimeout(() => (btn.textContent = "Copia"), 1500); })
+    .catch(() => { btn.textContent = "Copia manuale"; });
+}
+function hideOnboard(neverShow) {
+  if (neverShow) localStorage.setItem("rcsb-onboard-dismiss", "all");
+  $("onboard-overlay").style.display = "none";
+}
+checkOnboarding();
 </script>
 </body>
 </html>`;

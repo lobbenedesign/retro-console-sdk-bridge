@@ -106,10 +106,10 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
   .guide .actions { display:flex; gap:8px; flex-wrap:wrap; }
   .step-help { font-size:11px; color:var(--mut); margin:-6px 0 14px; }
   /* ---------- storico build ---------- */
-  .hist-row { display:grid; grid-template-columns:auto 90px 60px 1fr auto; gap:10px; align-items:center;
+  .hist-row { display:grid; grid-template-columns:auto 140px 70px auto 1fr; gap:10px; align-items:center;
     padding:6px 4px; border-top:1px solid var(--line); font-size:12px; }
   .hist-row:first-child { border-top:none; }
-  .hist-badge { border-radius:6px; padding:2px 7px; font-size:10.5px; font-weight:700; }
+  .hist-badge { border-radius:6px; padding:2px 7px; font-size:10.5px; font-weight:700; justify-self:start; }
   .hist-badge.ok { background:#14532d; color:var(--ok); }
   .hist-badge.fail { background:#450a0a; color:var(--err); }
   .diffbox { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; }

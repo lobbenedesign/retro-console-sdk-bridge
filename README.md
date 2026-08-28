@@ -1,16 +1,106 @@
 # 🎮 Retro Console SDK Bridge
 
+[English](#english) | [Italiano](#italiano)
+
+Independent project, unofficial, not affiliated with or endorsed by Nintendo. /
+Progetto indipendente, non ufficiale, non affiliato né approvato da Nintendo.
+
+---
+
+## English
+
+Local web studio for compiling real C code against the `include/nintendo_hal.h`
+hardware abstraction, which wraps **real, open-source** homebrew SDKs for
+Nintendo consoles: [libnx](https://github.com/switchbrew/libnx) (Switch),
+[libogc](https://github.com/devkitPro/libogc) (Wii/GameCube),
+[libdragon](https://github.com/DragonMinded/libdragon) (N64) and
+[pvsneslib](https://github.com/alekmaul/pvsneslib) (SNES), all installable for
+free via [devkitPro](https://github.com/devkitPro/pacman). Also handles real
+ROM tooling for N64/SNES/Genesis/PSP: identification, MIO0/Yay0
+decompression, texture/F3D mesh decoding, MIPS disassembly, IPS/BPS
+patching, checksum fixing, and — as of this update — real header write-back
+(not just inspection).
+
+### Screenshots
+
+Captured with real headless Chrome against the actual running app (driven
+via the DevTools Protocol to set up real state — a loaded synthetic ROM, a
+real compiled build) — not mockups.
+
+| Guided entry point | Contextual next-step banner |
+|---|---|
+| ![Start screen with the contextual guide banner](docs/screenshots/rom-guide-start.png) | ![Guide banner after loading a ROM, suggesting the next step](docs/screenshots/rom-guide-contextual.png) |
+
+A persistent banner in the ROM view always tells a first-time user what to
+do next, with a button that jumps straight to the right section — added
+specifically so the app can guide someone through load → unpack → modify
+without getting lost among the 10 sidebar sections.
+
+| Quick-guide modal | ROM header editor (real write-back) |
+|---|---|
+| ![Quick guide modal explaining the 5-step workflow](docs/screenshots/guide-modal.png) | ![N64 ROM header editor with real parsed values, pre-filled](docs/screenshots/rom-header-editor.png) |
+
+The header editor writes real bytes back into the ROM (title/country/version
+for N64; title/version/destination for SNES, with automatic checksum
+recalculation) — not just an inspector, gated behind the same usage
+declaration as the patcher.
+
+| Multi-file project source | Build history (this browser) |
+|---|---|
+| ![Homebrew compiler with multi-file ZIP upload](docs/screenshots/homebrew-multifile.png) | ![Build history with two real compiled Switch builds](docs/screenshots/homebrew-build-history.png) |
+
+A ZIP with multiple `.c`/`.h` files is unpacked and compiled+linked together
+for real (not just the first file); every build's log/outcome is kept in
+this browser's `localStorage` for later comparison.
+
+### What's real vs simulated, stated honestly
+
+Everything shown above is the actual running app, not staged screenshots of
+different mockups: the ROM is a real synthetic N64 header (real magic bytes,
+real parsed fields), the compiled Switch binary is a genuine `.nro` produced
+by the real devkitA64 toolchain via two linked object files, and the build
+history entries are real localStorage writes from that real compile. See the
+Italian section below for the full, continuously-updated development log —
+every fix and feature is documented there with what was verified and how.
+
+---
+
+## Italiano
+
 Studio web locale per compilare codice C contro l'astrazione hardware
 `include/nintendo_hal.h`, che avvolge gli SDK homebrew **reali e open-source**
 per console Nintendo: [libnx](https://github.com/switchbrew/libnx) (Switch),
 [libogc](https://github.com/devkitPro/libogc) (Wii/GameCube),
 [libdragon](https://github.com/DragonMinded/libdragon) (N64) e
 [pvsneslib](https://github.com/alekmaul/pvsneslib) (SNES), tutti installabili
-gratuitamente via [devkitPro](https://github.com/devkitPro/pacman).
+gratuitamente via [devkitPro](https://github.com/devkitPro/pacman). Gestisce
+anche il toolkit ROM reale per N64/SNES/Genesis/PSP: identificazione,
+decompressione MIO0/Yay0, decodifica texture/mesh F3D, disassembly MIPS,
+patching IPS/BPS, fix checksum e — da questo aggiornamento — scrittura reale
+dell'header (non solo lettura).
 
-Progetto indipendente, non ufficiale, non affiliato né approvato da Nintendo.
+### Screenshot
 
-## Nota onesta sullo stato v1.1 → v1.2
+Catturati con Chrome headless reale contro l'app effettivamente in
+esecuzione (pilotato via DevTools Protocol per impostare stato reale — una
+ROM sintetica caricata, una build compilata per davvero) — non mockup.
+
+| Guida contestuale | Editor header ROM (scrittura reale) |
+|---|---|
+| ![Riquadro guida contestuale nella vista ROM](docs/screenshots/rom-guide-contextual.png) | ![Editor header N64 con valori reali pre-compilati](docs/screenshots/rom-header-editor.png) |
+
+Un riquadro sempre visibile nella vista ROM dice all'utente cosa fare dopo,
+con un pulsante che porta dritto alla sezione giusta — pensato apposta per
+non far perdere l'utente tra le 10 sezioni della barra laterale durante il
+percorso carica → scompatta → modifica.
+
+| Storico build (questo browser) |
+|---|
+| ![Storico con due build Switch reali compilate](docs/screenshots/homebrew-build-history.png) |
+
+Dettagli e motivazioni complete nella cronologia di sviluppo qui sotto.
+
+### Nota onesta sullo stato v1.1 → v1.2
 
 La v1.0 fingeva sempre un compile "riuscito": se il toolchain reale non era
 installato, generava un file di 16KB quasi vuoto con solo un header magico,
@@ -26,7 +116,7 @@ aggiunge due funzionalità concrete in più. Ecco cosa è stato fatto,
 verificato con compilazioni e link reali sul toolchain devkitPro
 effettivamente installato su questa macchina (non solo lettura di codice).
 
-### 1. Fix reale del link Switch (`read-only segment has dynamic relocations`)
+#### 1. Fix reale del link Switch (`read-only segment has dynamic relocations`)
 
 **Ricerca**: confrontato il nostro comando di link con il Makefile ufficiale
 devkitPro (`$DEVKITPRO/examples/switch/templates/application/Makefile`,
@@ -59,14 +149,14 @@ su questa macchina: `which elf2nro` falliva pur essendo il binario presente
 su disco). Ora `findPackagingTool()` controlla prima il percorso standard
 devkitPro, poi il `PATH`.
 
-### 2. Stato toolchain reale per piattaforma (`GET /api/toolchains`)
+#### 2. Stato toolchain reale per piattaforma (`GET /api/toolchains`)
 
 Nuovo endpoint e pannello in UI che mostrano, piattaforma per piattaforma,
 se il compilatore reale è installato ORA su questa macchina, con il percorso
 reale. Verificato dal vivo: Switch e Wii/GameCube risultano installati (con
 percorso reale sotto `/opt/devkitpro`), N64 e SNES no.
 
-### 3. Scaffold di progetto reale (`GET /api/scaffold?platform=...`)
+#### 3. Scaffold di progetto reale (`GET /api/scaffold?platform=...`)
 
 Uno studio browser-based compila un solo file sorgente alla volta: comodo
 per prototipare, ma un vero progetto homebrew multi-file richiede il vero
@@ -91,7 +181,7 @@ di relocation si presenta con il codice generato dall'astrazione
 questo il fix è stato applicato al percorso di compilazione di questo
 studio, senza toccare `nintendo_hal.h`, che restava già corretto).
 
-## Cosa funziona oggi, verificato dal vivo su questa macchina
+### Cosa funziona oggi, verificato dal vivo su questa macchina
 
 | Piattaforma | Compilazione reale | Link reale | Packaging finale reale |
 |---|---|---|---|
@@ -113,7 +203,7 @@ toolchain (verificato leggendo `$DEVKITPRO/devkitPPC/gamecube_rules` e
 con `curl` reali: entrambe le piattaforme producono ora un `.dol` genuino
 end-to-end (compilazione + link + packaging), non solo lo scaffold Makefile.
 
-### 4. Patcher di ROM reale (IPS/BPS) con dichiarazione d'uso onesta
+#### 4. Patcher di ROM reale (IPS/BPS) con dichiarazione d'uso onesta
 
 Aggiunta la possibilità di applicare una patch di modding/traduzione fan
 (formati **IPS** e **BPS**, gli standard reali usati dalla community di ROM
@@ -166,7 +256,7 @@ concatenava `declarationId.acceptedAt.signature` con `.` come separatore, ma
 rompendo lo split lato verifica. Corretto usando `|` come separatore, e
 riverificato l'intero flusso end-to-end via richieste HTTP reali dopo il fix.
 
-### 5. Inspector header ROM N64 + editor level-script SM64 (sperimentale)
+#### 5. Inspector header ROM N64 + editor level-script SM64 (sperimentale)
 
 Due strumenti aggiuntivi, basati **solo su documentazione pubblica** della
 community di reverse engineering, mai su analisi diretta di una ROM
@@ -195,7 +285,7 @@ specifica da parte di questo assistente durante lo sviluppo:
   mano secondo la specifica pubblica (place-object, mario-spawn,
   end-of-script), incluso il rilevamento di opcode sconosciuti.
 
-### 6. Decoder texture N64 (formati hardware generici)
+#### 6. Decoder texture N64 (formati hardware generici)
 
 Aggiunto `src/n64_texture.ts`: decodifica reale dei 9 formati texture RDP
 (RGBA16, RGBA32, IA16, IA8, IA4, I8, I4, CI4, CI8) — formati hardware
@@ -215,7 +305,7 @@ blob di byte della texture (mai una ROM intera); la preview è disegnata
 lato client su un `<canvas>` reale via `ImageData`, senza bisogno di un
 encoder PNG lato server.
 
-### 7. Correzioni post-ROADMAP: offset header reale + cross-check MIO0
+#### 7. Correzioni post-ROADMAP: offset header reale + cross-check MIO0
 
 Seguendo le priorità indicate in `ROADMAP.md`:
 
@@ -246,7 +336,7 @@ Seguendo le priorità indicate in `ROADMAP.md`:
   verificati — da riprendere se si trova la specifica esatta (es.
   ispezionando `ed64romconfig.c` di libdragon direttamente).
 
-### 8. Decompressore Yay0 (priorità #4 del ROADMAP)
+#### 8. Decompressore Yay0 (priorità #4 del ROADMAP)
 
 Aggiunto `src/n64_yay0.ts`: decompressore reale del formato Yay0, formato
 di compressione hardware generico imparentato a MIO0 (stessa famiglia,
@@ -270,7 +360,7 @@ zero → byte extra dalla sezione chunk, count = extra+18, verificato
 anche via richiesta HTTP end-to-end reale sul server. Solo decompressione:
 nessun encoder Yay0 disponibile in questa versione.
 
-### 9. Ciclo completo estrazione → modifica → repack (v1.3)
+#### 9. Ciclo completo estrazione → modifica → repack (v1.3)
 
 Chiude il ciclo che prima costringeva l'utente a indovinare offset e a
 rinunciare al ricalcolo dei checksum. Sei nuovi moduli, tutti con test
@@ -330,7 +420,7 @@ cosa è installato su questa macchina (stesso spirito di
 `/api/toolchains`); al momento entrambi risultano assenti e i pannelli
 UI lo mostrano esplicitamente invece di fingere.
 
-## Avvio
+### Avvio
 
 ```bash
 bun install
@@ -357,7 +447,7 @@ server è già attivo si limitano ad aprire il browser. Server già attivo su
 tentativo di compilazione per quella piattaforma risponde onestamente con le
 istruzioni di installazione reali invece di un falso successo.
 
-### UI v1.4 — studio applicativo (non più pila di pannelli)
+#### UI v1.4 — studio applicativo (non più pila di pannelli)
 Ridisegnata dopo feedback reale d'uso. La vecchia UI era una colonna di
 pannelli indipendenti che richiedevano ciascuno il proprio upload; ora:
 
@@ -376,7 +466,7 @@ pannelli indipendenti che richiedevano ciascuno il proprio upload; ora:
   esporta) che si illumina man mano che la pipeline avanza;
 - barra di stato inferiore con l'ultima operazione reale effettuata.
 
-## API
+### API
 
 - `POST /api/build` — `{ platform, sourceCode }` → compila/linka/pacchettizza
   con il toolchain reale, se presente.
@@ -443,7 +533,7 @@ pannelli indipendenti che richiedevano ciascuno il proprio upload; ora:
   (CRC/split/level-script), convertita in .z64 se era .v64/.n64 (dietro
   gate di dichiarazione).
 
-## Test automatizzati
+### Test automatizzati
 
 68 test reali (151 `expect()`), eseguiti con `bun test`, in 8 file sotto
 `test/`. Nessun mock: ogni test costruisce dati binari sintetici ma
@@ -471,11 +561,11 @@ rilevamento reale: se non è presente, quel singolo test viene saltato
 onestamente (`test.skipIf`) invece di fallire — sia in locale che in CI.
 Tutti gli altri test non hanno dipendenze esterne.
 
-## CI
+### CI
 
 GitHub Actions (`.github/workflows/ci.yml`) esegue `bun test` su ogni push e
 pull request verso `main`. Il runner CI non ha devkitPro installato: il test
 di rilevamento toolchain viene quindi saltato, non fallito.
 
-## Licenza
+### Licenza
 MIT.

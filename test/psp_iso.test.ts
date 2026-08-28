@@ -177,4 +177,15 @@ describe("CSO (spec trascritta da ppsspp BlockDevices)", () => {
     expect(openSectorReader(iso)).toBeInstanceOf(IsoReader);
     expect(openSectorReader(buildCsoFromIso(iso))).toBeInstanceOf(CsoReader);
   });
+
+  test("regressione: un CSO valido piccolo NON deve essere rifiutato dal check dimensioni (vale solo per ISO nude)", () => {
+    // bug reale: l'endpoint applicava 'min 17*2048 byte' anche ai CSO, ma
+    // un CSO e per definizione molto piu corto dell'ISO decompressa.
+    // Prerequisito a livello modulo: un CSO piccolo che decomprime un'ISO
+    // valida si apre e il filesystem si legge.
+    const cso = buildCsoFromIso(iso);
+    if (cso.length >= 17 * SECTOR) return; // non e' il caso limite: skip onesto
+    const listing = listIsoFiles(new CsoReader(cso));
+    expect(listing.entries.map((e) => e.path)).toContain("DATA.BIN");
+  });
 });

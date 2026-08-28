@@ -24,7 +24,7 @@ import { unzip } from "./src/zip_reader";
 import { DASHBOARD_HTML } from "./src/dashboard_html";
 import { parseGenesisRomHeader, fixGenesisChecksum, writeGenesisRomHeader } from "./src/genesis_rom_header";
 import { detectExtraToolchains, scaffoldExtra } from "./src/segasony_scaffold";
-import { openSectorReader } from "./src/psp_cso";
+import { openSectorReader, isCso } from "./src/psp_cso";
 import { listIsoFiles, extractIsoFile } from "./src/psp_iso";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
 import { parseN64RomHeader, writeN64RomHeader } from "./src/n64_rom_header";
@@ -156,7 +156,12 @@ const server = Bun.serve({
       try {
         const body: any = await req.json();
         const image = new Uint8Array(Buffer.from(body.imageBase64 || "", "base64"));
-        if (image.length < 17 * 2048) return new Response(JSON.stringify({ error: "Immagine troppo corta per un ISO9660 (min LBA 16 + PVD)." }), { status: 400, headers });
+        // un CSO compresso è per definizione PIÙ CORTO dell'ISO decompressa:
+        // il limite minimo ha senso solo per ISO nude (bug reale corretto:
+        // la prima versione rifiutava CSO piccoli ma perfettamente validi)
+        if (!isCso(image) && image.length < 17 * 2048) {
+          return new Response(JSON.stringify({ error: "Immagine troppo corta per un ISO9660 (min LBA 16 + PVD)." }), { status: 400, headers });
+        }
         const reader = openSectorReader(image);
         const listing = listIsoFiles(reader);
         return new Response(JSON.stringify({

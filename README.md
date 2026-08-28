@@ -528,6 +528,12 @@ pannelli indipendenti che richiedevano ciascuno il proprio upload; ora:
   Riconosce N64 (z64/v64/n64 con conversione automatica a z64), SNES, NES,
   GB/GBC, GBA, NDS, Mega Drive, GameCube, Wii. Le voci non-ROM dentro lo
   ZIP (readme ecc.) vengono marcate "ignorata", mai far fallire il resto.
+- `POST /api/psp/fs/list` — `{ imageBase64 }` → filesystem ISO9660 reale di
+  un gioco PSP da **ISO o CSO** (decompressione CSO settore-per-settore,
+  spec trascritta dal reader reale di ppsspp, GPL usata solo come
+  riferimento di formato): elenco file con dimensioni e LBA.
+- `POST /api/psp/fs/extract` — `{ imageBase64, path }` → estrazione reale
+  di un singolo file dal disco (funziona identico su ISO e CSO).
 - `POST /api/rom/prepare` — `{ fullName, token, romBase64 }` → unzip +
   identificazione + restituzione della ROM N64 pronta per gli altri tool
   (CRC/split/level-script), convertita in .z64 se era .v64/.n64 (dietro

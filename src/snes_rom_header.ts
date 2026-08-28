@@ -139,3 +139,47 @@ export function parseSnesRomHeader(rom: Uint8Array): SnesRomHeader {
   pool.sort((a, b) => b.title.length - a.title.length);
   return { ...pool[0], mapping: consistent.length ? pool[0].mapping : "sconosciuta" };
 }
+
+/**
+ * Ricalcola il checksum reale SNES: somma a 16 bit di tutti i byte della
+ * ROM, col campo checksum stesso forzato a 0xFFFF e il complemento a 0x0000
+ * durante il calcolo — convenzione standard usata dai tool di produzione
+ * ROM reali (documentata su sneslab.net/fullsnes, stessa fonte pubblica già
+ * citata in cima a questo file). Il complemento è sempre `checksum XOR
+ * 0xFFFF`: è così che un lettore verifica la coerenza senza dover ricalcolare.
+ */
+export function computeSnesChecksum(rom: Uint8Array, headerOffset: number): { checksum: number; complement: number } {
+  const work = new Uint8Array(rom);
+  work[headerOffset + 0x1c] = 0x00; work[headerOffset + 0x1d] = 0x00;
+  work[headerOffset + 0x1e] = 0xff; work[headerOffset + 0x1f] = 0xff;
+  let sum = 0;
+  for (let i = 0; i < work.length; i++) sum = (sum + work[i]) & 0xffff;
+  return { checksum: sum, complement: sum ^ 0xffff };
+}
+
+/**
+ * Riscrive titolo (21 byte ASCII), versione e/o destinazione nell'header
+ * SNES alla mappatura indicata, poi ricalcola SEMPRE il checksum reale: il
+ * titolo è coperto dal checksum, quindi modificarlo senza ricalcolo produce
+ * una ROM che molti emulatori/flashcart segnalano come corrotta. Ritorna
+ * una copia: i byte del client non vengono mai mutati in place.
+ */
+export function writeSnesRomHeader(
+  rom: Uint8Array, headerOffset: number,
+  fields: { title?: string; version?: number; destination?: number }
+): { rom: Uint8Array; checksum: number; complement: number } {
+  const out = new Uint8Array(rom);
+  if (fields.title !== undefined) {
+    const field = new Uint8Array(21).fill(0x20);
+    field.set(new TextEncoder().encode(fields.title.toUpperCase().slice(0, 21)));
+    out.set(field, headerOffset);
+  }
+  if (fields.version !== undefined) out[headerOffset + 0x1b] = fields.version & 0xff;
+  if (fields.destination !== undefined) out[headerOffset + 0x19] = fields.destination & 0xff;
+  const { checksum, complement } = computeSnesChecksum(out, headerOffset);
+  out[headerOffset + 0x1c] = complement & 0xff;
+  out[headerOffset + 0x1d] = (complement >> 8) & 0xff;
+  out[headerOffset + 0x1e] = checksum & 0xff;
+  out[headerOffset + 0x1f] = (checksum >> 8) & 0xff;
+  return { rom: out, checksum, complement };
+}

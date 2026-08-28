@@ -32,7 +32,12 @@ if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 function getOrCreateSecret(): string {
   if (existsSync(SECRET_PATH)) return readFileSync(SECRET_PATH, "utf-8").trim();
   const secret = randomBytes(32).toString("hex");
-  writeFileSync(SECRET_PATH, secret, "utf-8");
+  // mode 0o600: leggibile/scrivibile solo dal proprietario. Prima veniva
+  // creato con i permessi di default del sistema (spesso 0o644, leggibile
+  // da chiunque altro sulla stessa macchina) — un file che si chiama
+  // ".declaration_secret" e firma token HMAC dovrebbe essere privato per
+  // definizione, non solo per nome.
+  writeFileSync(SECRET_PATH, secret, { encoding: "utf-8", mode: 0o600 });
   return secret;
 }
 const SECRET = getOrCreateSecret();

@@ -98,6 +98,22 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     font-family:ui-monospace,monospace; font-size:12px; color:#38bdf8; word-break:break-all; }
   .ok-note { color:var(--ok); font-size:13px; }
   .warn-note { color:var(--warn); font-size:13px; }
+  /* ---------- guida contestuale ---------- */
+  .guide { background:linear-gradient(135deg,rgba(124,58,237,.14),rgba(0,198,255,.06)); border:1px solid var(--pri);
+    border-radius:12px; padding:14px 16px; margin-bottom:16px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .guide .txt { flex:1; min-width:220px; font-size:13px; line-height:1.5; }
+  .guide .txt b { color:var(--acc); }
+  .guide .actions { display:flex; gap:8px; flex-wrap:wrap; }
+  .step-help { font-size:11px; color:var(--mut); margin:-6px 0 14px; }
+  /* ---------- storico build ---------- */
+  .hist-row { display:grid; grid-template-columns:auto 90px 60px 1fr auto; gap:10px; align-items:center;
+    padding:6px 4px; border-top:1px solid var(--line); font-size:12px; }
+  .hist-row:first-child { border-top:none; }
+  .hist-badge { border-radius:6px; padding:2px 7px; font-size:10.5px; font-weight:700; }
+  .hist-badge.ok { background:#14532d; color:var(--ok); }
+  .hist-badge.fail { background:#450a0a; color:var(--err); }
+  .diffbox { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; }
+  .diffbox .log { max-height:320px; }
 </style>
 </head>
 <body>
@@ -109,6 +125,7 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     <div id="chip-blob" class="chip" style="display:none"></div>
     <div id="chip-decl" class="chip warn">✍️ Dichiarazione mancante</div>
   </div>
+  <button class="btn dark mini" onclick="showGuideModal()">❓ Guida rapida</button>
 </header>
 
 <div class="shell">
@@ -135,15 +152,22 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
 <section class="view active" data-view="rom">
   <h1>ROM &amp; Identificazione</h1>
   <p class="sub">Punto d'ingresso: carica una ROM (qualsiasi console) o un file <b>.zip</b>. Viene estratta e identificata
-  realmente in memoria — nessun file salvato. Da qui tutti gli altri tool la riutilizzano senza ri-caricarla.</p>
+  realmente in memoria — nessun file salvato. Da qui tutti gli altri tool la riutilizzano senza ri-caricarla.
+  Prima volta qui? Premi <b>❓ Guida rapida</b> in alto: spiega tutto il percorso carica→scompatta→modifica in 5 passi.</p>
+
+  <div class="guide" id="guide-banner">
+    <div class="txt" id="guide-text">👋 Inizia caricando una ROM o uno ZIP qui sotto. Ti guideremo passo passo su cosa fare dopo.</div>
+    <div class="actions" id="guide-actions"></div>
+  </div>
 
   <div class="flow" id="flow">
-    <span class="step" id="fs-load">1 · carica</span>
-    <span class="step" id="fs-id">2 · identifica</span>
-    <span class="step" id="fs-prep">3 · prepara z64</span>
-    <span class="step" id="fs-edit">4 · modifica</span>
-    <span class="step" id="fs-export">5 · esporta</span>
+    <span class="step" id="fs-load" title="Carica una ROM o uno ZIP: viene letta in memoria, mai salvata su disco.">1 · carica</span>
+    <span class="step" id="fs-id" title="La console e il formato vengono riconosciuti automaticamente dai byte magici.">2 · identifica</span>
+    <span class="step" id="fs-prep" title="Solo N64: le ROM .v64/.n64 vengono convertite automaticamente in .z64.">3 · prepara z64</span>
+    <span class="step" id="fs-edit" title="Un blocco decompresso o un file estratto diventa il 'blob corrente' modificabile.">4 · modifica</span>
+    <span class="step" id="fs-export" title="Il risultato modificato è pronto da ricomprimere/scaricare.">5 · esporta</span>
   </div>
+  <p class="step-help">Passa il mouse su ogni passo per una spiegazione. Il riquadro viola sopra ti dice sempre cosa fare adesso.</p>
 
   <div class="card">
     <h2>Carica ROM o archivio ZIP</h2>
@@ -165,6 +189,29 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
       <button class="btn dark" onclick="inspectHeadersUI(true)">Leggi header SNES</button>
     </div>
     <div class="log" id="hdr-log" style="margin-top:10px">—</div>
+  </div>
+
+  <div class="card" id="hdr-edit-card" style="display:none">
+    <h2>✏️ Modifica header (scrittura reale)</h2>
+    <p class="muted" style="margin:0 0 10px">Riscrive i campi nell'header e ricalcola il checksum quando necessario. Richiede la dichiarazione d'uso (vista Patcher &amp; CRC) — stesso gate di patch e fix checksum, perché è comunque una scrittura reale sulla ROM.</p>
+    <div id="hdr-edit-n64" style="display:none">
+      <div class="row">
+        <div class="field">Titolo (max 20 car.)<input type="text" id="hdr-n64-name" maxlength="20" style="width:220px" /></div>
+        <div class="field">Country code (hex)<input type="text" id="hdr-n64-country" style="width:70px" placeholder="45" /></div>
+        <div class="field">Versione<input type="number" id="hdr-n64-version" style="width:70px" value="0" /></div>
+      </div>
+      <button class="btn purple" style="margin-top:10px" onclick="n64HeaderWriteUI()">Salva e scarica ROM modificata</button>
+    </div>
+    <div id="hdr-edit-snes" style="display:none">
+      <div class="row">
+        <div class="field">Titolo (max 21 car.)<input type="text" id="hdr-snes-name" maxlength="21" style="width:220px" /></div>
+        <div class="field">Versione<input type="number" id="hdr-snes-version" style="width:70px" value="0" /></div>
+      </div>
+      <p class="muted" style="margin:8px 0 0">Il checksum SNES viene sempre ricalcolato automaticamente dopo la modifica (è coerente col titolo: scriverlo senza ricalcolo produrrebbe una ROM "corrotta" per molti emulatori).</p>
+      <button class="btn purple" style="margin-top:10px" onclick="snesHeaderWriteUI()">Salva e scarica ROM modificata</button>
+    </div>
+    <div class="log" id="hdr-edit-log" style="margin-top:10px">—</div>
+    <div id="hdr-edit-dl"></div>
   </div>
 </section>
 
@@ -345,6 +392,11 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     </div>
     <div class="log" id="gen-log" style="margin-top:10px">—</div>
     <div id="gen-dl"></div>
+    <div class="row" style="margin-top:14px; border-top:1px solid var(--line); padding-top:12px">
+      <div class="field">Titolo internazionale (max 48)<input type="text" id="gen-title" maxlength="48" style="width:280px" /></div>
+      <label class="muted"><input type="checkbox" id="gen-title-sgdk" /> ricalcola in formato SGDK</label>
+      <button class="btn purple" onclick="genHeaderWriteUI()">✏️ Riscrivi titolo e ricalcola checksum</button>
+    </div>
   </div>
 
   <div class="card">
@@ -390,6 +442,15 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     <div class="platgrid" id="platgrid"></div>
   </div>
   <div class="card">
+    <h2>Sorgenti</h2>
+    <p class="muted" style="margin:0 0 10px">Un solo file: usa l'editor sotto. Progetto reale multi-file: carica uno <b>.zip</b> con più <code>.c</code>/<code>.h</code> — vengono compilati e linkati insieme davvero (non solo il primo file).</p>
+    <div class="row">
+      <div class="field">Progetto multi-file (.zip)<input type="file" id="build-zip" accept=".zip" /></div>
+      <button class="btn dark mini" onclick="clearBuildZip()">Torna all'editor singolo file</button>
+    </div>
+    <div class="muted" id="build-zip-info" style="margin-top:8px"></div>
+  </div>
+  <div class="card" id="editor-card">
     <h2>Editor sorgente (C via nintendo_hal.h)</h2>
     <textarea id="code-editor" rows="14"></textarea>
     <div class="row" style="margin-top:10px">
@@ -398,6 +459,16 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     </div>
     <div class="log" id="compile-log" style="margin-top:10px">Pronto.</div>
     <div id="compile-dl"></div>
+  </div>
+  <div class="card">
+    <h2>📜 Storico build (questo browser)</h2>
+    <p class="muted" style="margin:0 0 10px">Le ultime compilazioni restano qui (localStorage, solo su questo browser) così non sono "usa e getta": seleziona due righe per confrontarne i log.</p>
+    <div class="row">
+      <button class="btn dark mini" onclick="compareHistorySelected()">Confronta le 2 selezionate</button>
+      <button class="btn dark mini" onclick="clearBuildHistory()">Svuota storico</button>
+    </div>
+    <div id="hist-list" style="margin-top:8px">—</div>
+    <div id="hist-diff"></div>
   </div>
 </section>
 
@@ -415,6 +486,29 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
 </div>
 
 <div class="statusbar" id="statusbar">Pronto.</div>
+
+<!-- Modale guida rapida: spiega l'intero flusso ROM → scompatta → modifica →
+     ricomponi in linguaggio semplice, sempre raggiungibile dalla topbar. -->
+<div class="modal-overlay" id="guide-overlay" style="display:none" onclick="if(event.target===this) hideGuideModal()">
+  <div class="modal">
+    <h1>❓ Come funziona: dalla ROM alla modifica</h1>
+    <p class="sub">Cinque passi, sempre nello stesso ordine. Puoi sempre riaprire questa guida dal pulsante in alto.</p>
+    <div class="tc-row"><strong style="font-size:13px">1 · Carica</strong><span class="muted" style="font-size:12.5px">
+      Vai in <b>🗂 ROM &amp; Identificazione</b> e trascina la tua ROM (o uno ZIP). Viene letta e riconosciuta subito, solo in memoria.</span></div>
+    <div class="tc-row"><strong style="font-size:13px">2 · Trova cosa è "scompattabile"</strong><span class="muted" style="font-size:12.5px">
+      Su N64 i dati (livelli, texture, modelli) spesso vivono dentro blocchi compressi MIO0/Yay0. Vai in <b>📦 Split &amp; Compressione</b> e premi "Scansiona ROM": trovi l'elenco reale dei blocchi nella tua copia.</span></div>
+    <div class="tc-row"><strong style="font-size:13px">3 · Decomprimi → "blob corrente"</strong><span class="muted" style="font-size:12.5px">
+      Premi "Decomprimi → blob" su un blocco: diventa il tuo <b>blob corrente</b> (vedi il chip 📦 in alto), condiviso da tutti i tool a valle — non serve ricaricarlo altrove.</span></div>
+    <div class="tc-row"><strong style="font-size:13px">4 · Modifica</strong><span class="muted" style="font-size:12.5px">
+      A seconda del blocco: <b>🎨 Texture &amp; 3D</b> per grafica/mesh, <b>🗺 Level Script</b> per layout dei livelli SM64, <b>🧠 Disassembler</b> per leggere il codice. Ogni vista lavora sul blob corrente.</span></div>
+    <div class="tc-row"><strong style="font-size:13px">5 · Ricomponi ed esporta</strong><span class="muted" style="font-size:12.5px">
+      Ricomprimi in <b>📦 Split &amp; Compressione</b>, poi — se vuoi una ROM avviabile — vai in <b>🩹 Patcher &amp; CRC</b> per applicare patch o ricalcolare i checksum. La ROM finale si scarica sempre da lì.</span></div>
+    <p class="muted" style="margin-top:14px">In ogni momento, la vista <b>🗂 ROM &amp; Identificazione</b> mostra un riquadro viola con il "prossimo passo consigliato" in base a cosa hai già fatto — usalo se non sai dove andare.</p>
+    <div class="row" style="margin-top:18px; justify-content:flex-end">
+      <button class="btn purple" onclick="hideGuideModal()">Ho capito, chiudi</button>
+    </div>
+  </div>
+</div>
 
 <!-- Modale onboarding: rileva i toolchain mancanti e guida l'installazione reale -->
 <div class="modal-overlay" id="onboard-overlay" style="display:none">
@@ -446,6 +540,8 @@ const state = {
   blob: null, blobName: "",                         // blob corrente (segmento decompresso)
   declToken: null, declName: null,
   lsCommands: null, f3dMesh: null,
+  lastHeaderFormat: null, // "n64" | "snes" dopo l'ultima lettura header, per l'editor
+  buildZipBase64: null, buildZipNames: [],
 };
 let activePlatform = "switch";
 
@@ -489,8 +585,49 @@ function refreshChips() {
   if (state.declToken) { cd.className = "chip ok"; cd.textContent = "✍️ Dichiarazione: " + state.declName; }
   else { cd.className = "chip warn"; cd.textContent = "✍️ Dichiarazione mancante"; }
 }
-function setFlow(stepId, done) { $(stepId).classList.toggle("done", done); }
-function setBlob(bytes, name) { state.blob = bytes; state.blobName = name; refreshChips(); setStatus("blob corrente: " + name + " (" + bytes.length + " byte)"); }
+function setFlow(stepId, done) { $(stepId).classList.toggle("done", done); renderGuide(); }
+function setBlob(bytes, name) { state.blob = bytes; state.blobName = name; refreshChips(); setStatus("blob corrente: " + name + " (" + bytes.length + " byte)"); renderGuide(); }
+
+// ================= guida contestuale =================
+// Legge il flow-stepper (già aggiornato da setFlow ad ogni azione reale) e
+// dice all'utente, in linguaggio semplice, cosa fare adesso — con un
+// pulsante che lo porta direttamente nella vista giusta, invece di lasciarlo
+// cercare tra le 10 sezioni della barra laterale.
+function goToView(name) {
+  const btn = document.querySelector('.navbtn[data-view="' + name + '"]');
+  if (btn) btn.click();
+}
+function renderGuide() {
+  const el = $("guide-text"), act = $("guide-actions");
+  if (!el || !act) return;
+  const done = (id) => $(id) && $(id).classList.contains("done");
+  act.innerHTML = "";
+  const addBtn = (label, view) => {
+    const b = document.createElement("button");
+    b.className = "btn purple mini"; b.textContent = label;
+    b.onclick = () => goToView(view);
+    act.appendChild(b);
+  };
+  if (!state.rom) {
+    el.innerHTML = "👋 <b>Inizia qui</b>: carica una ROM o uno ZIP col riquadro qui sotto.";
+  } else if (state.romConsole === "Nintendo 64" && !state.blob) {
+    el.innerHTML = "✓ ROM caricata (<b>" + state.romName + "</b>, " + state.romConsole + "). <b>Prossimo passo</b>: cerca i blocchi compressi (dati/livelli/texture) da modificare.";
+    addBtn("Vai a Split & Compressione →", "split");
+  } else if (state.romConsole !== "Nintendo 64" && !state.blob) {
+    el.innerHTML = "✓ ROM caricata (<b>" + state.romName + "</b>, " + state.romConsole + "). Su questa console lo studio lavora soprattutto su checksum/patch: vai in Patcher &amp; CRC, oppure leggi l'header qui sopra per modificarne il titolo.";
+    addBtn("Vai a Patcher & CRC →", "patch");
+  } else if (state.blob && !done("fs-export")) {
+    el.innerHTML = "📦 Hai un <b>blob corrente</b> (" + state.blobName + ") pronto da modificare. Scegli dove lavorarci: grafica/mesh, script di livello, o codice.";
+    addBtn("🎨 Texture & 3D", "graphics"); addBtn("🗺 Level Script", "level"); addBtn("🧠 Disassembler", "code");
+  } else if (done("fs-export")) {
+    el.innerHTML = "✓ Hai dati modificati pronti. Ricomprimili in Split & Compressione se non l'hai già fatto, poi — per una ROM avviabile — vai in Patcher &amp; CRC per applicare patch o fixare i checksum.";
+    addBtn("📦 Split & Compressione", "split"); addBtn("🩹 Patcher & CRC", "patch");
+  } else {
+    el.innerHTML = "✓ ROM caricata. Continua da dove preferisci con la barra laterale, o riapri la guida (❓ in alto) per il percorso completo.";
+  }
+}
+function showGuideModal() { $("guide-overlay").style.display = "flex"; }
+function hideGuideModal() { $("guide-overlay").style.display = "none"; }
 
 // ================= VISTA ROM =================
 const dz = $("dropzone");
@@ -536,6 +673,7 @@ async function loadRom(file) {
     if (state.romConsole === "Nintendo 64") setFlow("fs-prep", true);
     refreshChips();
     setStatus("ROM caricata: " + state.romName + " (" + state.romConsole + ")");
+    renderGuide();
   } catch (e) { log("rom-log", "Errore: " + e.message, "var(--err)"); }
 }
 
@@ -550,6 +688,9 @@ async function inspectHeadersUI(snes) {
         "\\nChipset: " + d.chipset + "\\nROM: " + (d.romSize / 1024) + " KB · SRAM: " + (d.sramSize / 1024) +
         " KB\\nRegione: " + d.destination + "\\nChecksum: " + d.checksum + (d.checksumConsistent ? " ✓ coerente" : " ⚠ non coerente"),
         d.checksumConsistent ? "var(--ok)" : "var(--warn)");
+      state.lastHeaderFormat = "snes";
+      $("hdr-edit-card").style.display = "block"; $("hdr-edit-n64").style.display = "none"; $("hdr-edit-snes").style.display = "block";
+      $("hdr-snes-name").value = d.title || ""; $("hdr-snes-version").value = d.version || 0;
     } else {
       const d = await api("/api/n64/rom-header", { bytesBase64: toB64(state.rom.slice(0, 0x40)) });
       if (d.error) { log("hdr-log", "✗ " + d.error, "var(--err)"); return; }
@@ -558,8 +699,66 @@ async function inspectHeadersUI(snes) {
         "\\nRegione: " + d.countryName + "\\nVersione: " + d.version +
         "\\nCRC memorizzati: " + d.crc1 + " / " + d.crc2 + "\\nFormato cartuccia: " + d.cartridgeFormat,
         d.looksLikeValidN64Rom ? "var(--ok)" : "var(--warn)");
+      state.lastHeaderFormat = "n64";
+      $("hdr-edit-card").style.display = "block"; $("hdr-edit-snes").style.display = "none"; $("hdr-edit-n64").style.display = "block";
+      $("hdr-n64-name").value = d.imageName || ""; $("hdr-n64-country").value = (d.countryCode || 0).toString(16);
+      $("hdr-n64-version").value = d.version || 0;
     }
   } catch (e) { log("hdr-log", "Errore: " + e.message, "var(--err)"); }
+}
+
+// ---- editor header: scrittura reale, dietro il gate della dichiarazione ----
+function requireDecl(logId) {
+  if (!state.declToken) {
+    log(logId, "✗ Serve prima la dichiarazione d'uso (vista Patcher & CRC, punto 1): è comunque una scrittura reale sulla ROM.", "var(--err)");
+    return false;
+  }
+  return true;
+}
+async function n64HeaderWriteUI() {
+  if (!state.rom) { log("hdr-edit-log", "Prima carica una ROM.", "var(--err)"); return; }
+  if (!requireDecl("hdr-edit-log")) return;
+  const countryHex = $("hdr-n64-country").value.trim();
+  const body = {
+    fullName: state.declName, token: state.declToken, romBase64: toB64(state.rom),
+    imageName: $("hdr-n64-name").value, version: +$("hdr-n64-version").value,
+  };
+  if (countryHex) body.countryCode = parseInt(countryHex, 16);
+  log("hdr-edit-log", "⚡ Riscrittura header…", "var(--warn)");
+  const d = await api("/api/n64/rom-header/write", body);
+  if (d.error) { log("hdr-edit-log", "✗ " + d.error, "var(--err)"); return; }
+  log("hdr-edit-log", "✓ Header riscritto (nessun ricalcolo CRC necessario: titolo/paese/versione sono fuori dalla regione coperta dal boot checksum).", "var(--ok)");
+  $("hdr-edit-dl").innerHTML = "";
+  download(fromB64(d.romBase64), "rom_header_edit.z64", "Scarica ROM con header modificato (" + kb(d.size) + ")", "hdr-edit-dl");
+}
+async function snesHeaderWriteUI() {
+  if (!state.rom) { log("hdr-edit-log", "Prima carica una ROM.", "var(--err)"); return; }
+  if (!requireDecl("hdr-edit-log")) return;
+  const body = {
+    fullName: state.declName, token: state.declToken, romBase64: toB64(state.rom),
+    title: $("hdr-snes-name").value, version: +$("hdr-snes-version").value,
+  };
+  log("hdr-edit-log", "⚡ Riscrittura header e ricalcolo checksum…", "var(--warn)");
+  const d = await api("/api/snes/rom-header/write", body);
+  if (d.error) { log("hdr-edit-log", "✗ " + d.error, "var(--err)"); return; }
+  log("hdr-edit-log", "✓ Header riscritto, checksum ricalcolato: " + d.checksum + " (complemento " + d.checksumComplement + ").", "var(--ok)");
+  $("hdr-edit-dl").innerHTML = "";
+  download(fromB64(d.romBase64), "rom_header_edit.sfc", "Scarica ROM con header modificato (" + kb(d.size) + ")", "hdr-edit-dl");
+}
+async function genHeaderWriteUI() {
+  const rom = await genRom();
+  if (!rom) { log("gen-log", "Carica una ROM (vista ROM) o seleziona un file.", "var(--err)"); return; }
+  if (!requireDecl("gen-log")) return;
+  const body = {
+    fullName: state.declName, token: state.declToken, romBase64: toB64(rom),
+    overseasTitle: $("gen-title").value, sgdk: $("gen-title-sgdk").checked,
+  };
+  log("gen-log", "⚡ Riscrittura titolo e ricalcolo checksum…", "var(--warn)");
+  const d = await api("/api/genesis/rom-header/write", body);
+  if (d.error) { log("gen-log", "✗ " + d.error, "var(--err)"); return; }
+  log("gen-log", "✓ Titolo riscritto, checksum ricalcolato: " + d.checksum + ".", "var(--ok)");
+  $("gen-dl").innerHTML = "";
+  download(fromB64(d.romBase64), "rom_title_edit.md", "Scarica ROM con titolo modificato (" + kb(d.size) + ")", "gen-dl");
 }
 
 // ================= VISTA SPLIT =================
@@ -972,18 +1171,120 @@ function renderPlats() {
 }
 renderPlats();
 $("code-editor").value = DEFAULT_CODE;
+
+// ---- sorgenti multi-file (.zip) ----
+$("build-zip").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  state.buildZipBase64 = toB64(await fileToBytes(f));
+  state.buildZipNames = [f.name];
+  $("build-zip-info").textContent = "✓ " + f.name + " (" + kb(f.size) + ") — verrà sbustato realmente lato server: tutti i .c/.h dentro vengono compilati e linkati insieme.";
+  $("editor-card").style.opacity = "0.45"; $("editor-card").style.pointerEvents = "none";
+});
+function clearBuildZip() {
+  state.buildZipBase64 = null; state.buildZipNames = [];
+  $("build-zip").value = ""; $("build-zip-info").textContent = "";
+  $("editor-card").style.opacity = ""; $("editor-card").style.pointerEvents = "";
+}
+
+// ---- build: WebSocket con progresso reale in diretta, fallback a
+// richiesta singola se il WS non è disponibile (es. proxy che lo blocca) ----
+function appendCompileLog(line, color) {
+  const el = $("compile-log");
+  const row = document.createElement("div");
+  row.textContent = line; row.style.color = color || "var(--mut)";
+  el.appendChild(row);
+  el.scrollTop = el.scrollHeight;
+}
+function compileViaWs(body) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    let ws;
+    try { ws = new WebSocket(proto + "//" + location.host + "/ws/build"); }
+    catch (e) { reject(e); return; }
+    const openTimeout = setTimeout(() => { if (!settled) { settled = true; try { ws.close(); } catch (e) {} reject(new Error("timeout apertura WebSocket")); } }, 4000);
+    ws.onopen = () => { clearTimeout(openTimeout); ws.send(JSON.stringify(body)); };
+    ws.onerror = () => { if (!settled) { settled = true; clearTimeout(openTimeout); reject(new Error("connessione WebSocket fallita")); } };
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "progress") {
+        const icon = msg.status === "start" ? "⏳" : msg.status === "ok" ? "✓" : "✗";
+        appendCompileLog(icon + " [" + msg.stage + "] " + msg.message, msg.status === "fail" ? "var(--err)" : msg.status === "ok" ? "var(--ok)" : "var(--warn)");
+      } else if (msg.type === "done") {
+        settled = true; resolve(msg.result);
+      } else if (msg.type === "error") {
+        settled = true; reject(new Error(msg.message));
+      }
+    };
+  });
+}
 async function compileUI() {
   if (SCAFFOLD_ONLY.indexOf(activePlatform) >= 0) {
-    log("compile-log", "ℹ️ Per " + activePlatform + " questo studio genera SOLO lo scaffold reale (SGDK / KallistiOS / PSPSDK): " +
+    $("compile-log").innerHTML = "";
+    appendCompileLog("ℹ️ Per " + activePlatform + " questo studio genera SOLO lo scaffold reale (SGDK / KallistiOS / PSPSDK): " +
       "la compilazione richiede il toolchain specifico installato, che qui non c'è e non fingiamo. " +
       "Usa il pulsante 'Genera progetto Makefile'.", "var(--warn)");
     return;
   }
-  log("compile-log", "⚡ Compilazione reale in corso…", "var(--warn)");
-  const d = await api("/api/build", { platform: activePlatform, sourceCode: $("code-editor").value });
-  log("compile-log", d.logs, d.success ? "var(--ok)" : "var(--err)");
-  if (d.artifactBase64) download(fromB64(d.artifactBase64), "output_" + activePlatform, "Scarica binario compilato", "compile-dl");
+  $("compile-log").innerHTML = ""; $("compile-dl").innerHTML = "";
+  const body = state.buildZipBase64
+    ? { platform: activePlatform, zipBase64: state.buildZipBase64 }
+    : { platform: activePlatform, sourceCode: $("code-editor").value };
+  appendCompileLog("⚡ Compilazione reale in corso (progresso live via WebSocket)…", "var(--warn)");
+  let d;
+  try {
+    d = await compileViaWs(body);
+  } catch (e) {
+    appendCompileLog("⚠ " + e.message + " — fallback a richiesta singola (stesso risultato, nessun progresso intermedio).", "var(--warn)");
+    d = await api("/api/build", body);
+  }
+  appendCompileLog(d.logs, d.success ? "var(--ok)" : "var(--err)");
+  if (d.outputBinaryBase64) download(fromB64(d.outputBinaryBase64), d.outputBinaryName || ("output_" + activePlatform), "Scarica binario compilato", "compile-dl");
+  saveBuildHistory(d);
 }
+
+// ---- storico build (localStorage, solo metadati + log: niente binari
+// pesanti persistiti, per non far esplodere lo storage del browser) ----
+const HIST_KEY = "rcsb-build-history";
+const HIST_MAX = 12;
+function loadHistory() { try { return JSON.parse(localStorage.getItem(HIST_KEY) || "[]"); } catch (e) { return []; } }
+function saveBuildHistory(d) {
+  const hist = loadHistory();
+  hist.unshift({
+    ts: Date.now(), platform: activePlatform, success: !!d.success,
+    logs: d.logs || "", outputBinaryName: d.outputBinaryName || "", elfSize: d.elfSize || 0,
+    multiFile: !!state.buildZipBase64,
+  });
+  localStorage.setItem(HIST_KEY, JSON.stringify(hist.slice(0, HIST_MAX)));
+  renderHistory();
+}
+function clearBuildHistory() { localStorage.removeItem(HIST_KEY); renderHistory(); }
+function renderHistory() {
+  const hist = loadHistory();
+  const el = $("hist-list");
+  if (!hist.length) { el.innerHTML = '<span class="muted">Nessuna build ancora in questo browser.</span>'; return; }
+  el.innerHTML = hist.map((h, i) =>
+    '<div class="hist-row">' +
+      '<input type="checkbox" class="hist-check" data-i="' + i + '" />' +
+      '<span>' + new Date(h.ts).toLocaleString() + '</span>' +
+      '<span>' + h.platform + '</span>' +
+      '<span class="hist-badge ' + (h.success ? "ok" : "fail") + '">' + (h.success ? "OK" : "FALLITA") + '</span>' +
+      '<span class="muted">' + (h.outputBinaryName || (h.multiFile ? "multi-file" : "")) + (h.elfSize ? " · " + kb(h.elfSize) : "") + '</span>' +
+    '</div>').join("");
+  window._buildHistory = hist;
+}
+function compareHistorySelected() {
+  const checks = Array.from(document.querySelectorAll(".hist-check:checked")).map(c => +c.dataset.i);
+  const box = $("hist-diff");
+  if (checks.length !== 2) { box.innerHTML = '<p class="muted" style="margin-top:8px">Seleziona esattamente 2 righe per confrontarle.</p>'; return; }
+  const [a, b] = checks.map(i => window._buildHistory[i]);
+  box.innerHTML = '<div class="diffbox">' +
+    '<div><strong style="font-size:12px">' + new Date(a.ts).toLocaleString() + ' · ' + a.platform + '</strong><div class="log">' + (a.logs || "").replace(/</g, "&lt;") + '</div></div>' +
+    '<div><strong style="font-size:12px">' + new Date(b.ts).toLocaleString() + ' · ' + b.platform + '</strong><div class="log">' + (b.logs || "").replace(/</g, "&lt;") + '</div></div>' +
+  '</div>';
+}
+renderHistory();
 async function scaffoldUI() {
   log("compile-log", "⚡ Generazione scaffold…", "var(--warn)");
   const d = await (await fetch("/api/scaffold?platform=" + activePlatform)).json();
@@ -1012,6 +1313,7 @@ async function loadSetup() {
 loadSetup();
 
 refreshChips();
+renderGuide();
 setStatus("Pronto. Inizia caricando una ROM o uno ZIP dalla vista ROM.");
 
 // ================= modale onboarding toolchain =================

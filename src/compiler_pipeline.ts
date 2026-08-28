@@ -1,5 +1,21 @@
-import { existsSync, writeFileSync, readFileSync } from "fs";
+import { existsSync, writeFileSync, readFileSync, unlinkSync } from "fs";
 import { join } from "path";
+
+// Cancella i file temporanei di una compilazione, ignorando eventuali
+// percorsi mai creati (es. l'ELF quando il link è fallito). Prima non
+// venivano mai ripuliti: ogni compilazione lasciava 2-4 file reali sotto
+// /tmp per sempre, un leak di spazio disco reale su una macchina che
+// compila spesso — non un bug che rompe una funzione, ma uno che la rende
+// via via più costosa da usare.
+function cleanupTempFiles(paths: string[]): void {
+  for (const p of paths) {
+    try {
+      if (existsSync(p)) unlinkSync(p);
+    } catch {
+      // best-effort: non bloccare la risposta della build per un cleanup fallito
+    }
+  }
+}
 
 export interface ToolchainStatus {
   snes: { compiler: string; detected: boolean; path?: string };
@@ -11,8 +27,20 @@ export interface ToolchainStatus {
 
 export interface BuildParams {
   platform: "snes" | "n64" | "gamecube" | "wii" | "switch";
-  sourceCode: string;
+  // Modalità singolo file (retro-compatibile): un solo sorgente inline.
+  sourceCode?: string;
+  // Modalità multi-file: mappa nomefile -> contenuto. Ogni .c viene
+  // compilato nel proprio object file e poi tutti linkati insieme — un
+  // progetto homebrew reale raramente sta in un solo file.
+  sourceFiles?: Record<string, string>;
 }
+
+// Un evento per ogni fase reale della build (non simulato: emesso solo
+// quando quella fase viene davvero eseguita), usato dal server per
+// trasmettere il progresso in tempo reale via WebSocket invece di far
+// aspettare il client a schermo nero fino al log finale in blocco unico.
+export type ProgressCallback = (event: { stage: string; status: "start" | "ok" | "fail"; message: string }) => void;
+const noopProgress: ProgressCallback = () => {};
 
 export interface BuildResult {
   success: boolean;
@@ -69,7 +97,18 @@ export class CompilerPipeline {
   public detectToolchains(): ToolchainStatus {
     return {
       snes: { compiler: "wla-65816 (WLA-DX)", ...findBin(["wla-65816"]) },
-      n64: { compiler: "mips64-elf-gcc (n64chain / libdragon toolchain)", ...findBin(["mips64-elf-gcc", `${DEVKITPRO}/../n64chain/bin/mips64-elf-gcc`]) },
+      n64: { compiler: "mips64-elf-gcc (n64chain / libdragon toolchain)", ...findBin([
+        "mips64-elf-gcc",
+        `${DEVKITPRO}/../n64chain/bin/mips64-elf-gcc`,
+        // libdragon (github.com/DragonMinded/libdragon), il toolchain N64
+        // più diffuso oggi, si installa sotto $N64_INST (convenzione reale
+        // del suo script ./build, non indovinata: documentata nel README
+        // ufficiale) — prima non veniva mai controllata, quindi chiunque
+        // avesse libdragon installato SOLO lì (senza metterlo anche sul
+        // PATH) vedeva "non installato" nonostante il compilatore ci fosse
+        // davvero su disco.
+        ...(process.env.N64_INST ? [`${process.env.N64_INST}/bin/mips64-elf-gcc`] : []),
+      ]) },
       gamecube: { compiler: "powerpc-eabi-gcc (devkitPPC)", ...findBin(["powerpc-eabi-gcc", `${DEVKITPRO}/devkitPPC/bin/powerpc-eabi-gcc`]) },
       wii: { compiler: "powerpc-eabi-gcc (devkitPPC)", ...findBin(["powerpc-eabi-gcc", `${DEVKITPRO}/devkitPPC/bin/powerpc-eabi-gcc`]) },
       switch: { compiler: "aarch64-none-elf-gcc (devkitA64)", ...findBin(["aarch64-none-elf-gcc", `${DEVKITPRO}/devkitA64/bin/aarch64-none-elf-gcc`]) }
@@ -101,12 +140,13 @@ export class CompilerPipeline {
    * success:false con istruzioni reali — mai un binario o un log fabbricato
    * che finga una compilazione riuscita.
    */
-  public async compile(params: BuildParams): Promise<BuildResult> {
+  public async compile(params: BuildParams, onProgress: ProgressCallback = noopProgress): Promise<BuildResult> {
     const toolchains = this.detectToolchains();
     const status = toolchains[params.platform];
     const { tool: packTool, ext } = this.packagingTool(params.platform);
 
     if (!status.detected || !status.path) {
+      onProgress({ stage: "toolchain", status: "fail", message: `Toolchain '${status.compiler}' non trovato.` });
       return {
         success: false,
         elfSize: 0,
@@ -119,14 +159,65 @@ export class CompilerPipeline {
         installHint: this.installInstructions(params.platform)
       };
     }
+    onProgress({ stage: "toolchain", status: "ok", message: `Toolchain reale trovato: ${status.path}` });
 
+    // Modalità multi-file se il client ha fornito sourceFiles con almeno una
+    // voce; altrimenti retro-compatibile col singolo sourceCode inline di
+    // sempre. Ogni sorgente .c/.cpp/.s viene compilato nel proprio object
+    // file reale e poi tutti linkati insieme — file non-sorgente (es. .h)
+    // vengono scritti su disco per l'#include ma non passati al compilatore.
     const tempDir = "/tmp";
     const stamp = Date.now();
-    const sourceFile = join(tempDir, `nintendo_game_${stamp}.c`);
-    const objFile = join(tempDir, `nintendo_game_${stamp}.o`);
-    const elfFile = join(tempDir, `nintendo_game_${stamp}.elf`);
-    writeFileSync(sourceFile, params.sourceCode);
+    const multiEntries = Object.entries(params.sourceFiles || {});
+    const entries: Array<[string, string]> = multiEntries.length ? multiEntries : [["main.c", params.sourceCode || ""]];
+    const SOURCE_EXT = /\.(c|cpp|cc|s)$/i;
 
+    const tempPaths: string[] = [];
+    const objFiles: string[] = [];
+    const elfFile = join(tempDir, `nintendo_game_${stamp}.elf`);
+    tempPaths.push(elfFile);
+
+    let compileLog = "";
+    let compileFailed = false;
+    for (let i = 0; i < entries.length; i++) {
+      const [origName, content] = entries[i];
+      const safeName = origName.replace(/[^a-zA-Z0-9_.\-\/]/g, "_").replace(/^\/+/, "");
+      const destPath = join(tempDir, `nintendo_game_${stamp}_${i}_${safeName.replace(/\//g, "__")}`);
+      writeFileSync(destPath, content);
+      tempPaths.push(destPath);
+      if (!SOURCE_EXT.test(origName)) continue; // header o risorsa: solo scritto su disco, non compilato
+
+      onProgress({ stage: "compile", status: "start", message: `Compilazione di ${origName}…` });
+      const objFile = join(tempDir, `nintendo_game_${stamp}_${i}.o`);
+      const { code, stderr } = await this.compileOne(status.path!, destPath, objFile, params.platform);
+      if (code !== 0 || !existsSync(objFile)) {
+        compileFailed = true;
+        compileLog = `✗ Compilazione reale fallita con ${status.compiler} su ${origName}:\n${stderr.slice(-1500)}`;
+        onProgress({ stage: "compile", status: "fail", message: compileLog });
+        break;
+      }
+      objFiles.push(objFile);
+      tempPaths.push(objFile);
+      onProgress({ stage: "compile", status: "ok", message: `✓ ${origName} compilato.` });
+    }
+
+    if (compileFailed || objFiles.length === 0) {
+      cleanupTempFiles(tempPaths);
+      return {
+        success: false,
+        elfSize: 0,
+        outputBinaryName: "",
+        logs: compileFailed ? compileLog : "✗ Nessun file sorgente (.c/.cpp/.s) fornito da compilare.",
+        compilerUsed: status.compiler,
+        packaged: false
+      };
+    }
+
+    return this.linkAndPackage(params.platform, status, objFiles, elfFile, tempDir, stamp, tempPaths, packTool, ext, onProgress);
+  }
+
+  /** Compila un singolo file sorgente in un object file reale con i flag corretti per la piattaforma. */
+  private async compileOne(compilerPath: string, sourceFile: string, objFile: string, platform: BuildParams["platform"]): Promise<{ code: number; stderr: string }> {
     // MACHDEP reale, identico a quello definito in
     // $DEVKITPRO/devkitPPC/gamecube_rules e wii_rules su questa macchina
     // (letto direttamente dai file reali, non indovinato): GameCube usa
@@ -140,38 +231,49 @@ export class CompilerPipeline {
     };
 
     const LIBOGC_INC = `${DEVKITPRO}/libogc/include`;
+
+    // Compilazione reale del sorgente in un vero object file.
+    const compileArgs = [compilerPath, ...archFlags[platform], "-O2", "-c", sourceFile, "-o", objFile, `-I${join(import.meta.dir, "..", "include")}`];
+    if (platform === "switch") compileArgs.push(`-I${DEVKITPRO}/libnx/include`);
+    if (platform === "wii" || platform === "gamecube") compileArgs.push(`-I${LIBOGC_INC}`);
+    const proc = Bun.spawn(compileArgs, { stdout: "pipe", stderr: "pipe" });
+    const stderr = await new Response(proc.stderr).text();
+    const code = await proc.exited;
+    return { code, stderr };
+  }
+
+  /**
+   * Link (quando la piattaforma lo prevede) + packaging nel formato finale
+   * reale della console. Generalizzato a N object file (non solo 1) per
+   * supportare sia la build a singolo file di sempre sia quella multi-file:
+   * il comando di link reale già accetta più .o, non serve altro.
+   */
+  private async linkAndPackage(
+    platform: BuildParams["platform"], status: { compiler: string; path?: string },
+    objFiles: string[], elfFile: string, tempDir: string, stamp: number, tempPaths: string[],
+    packTool: string, ext: string, onProgress: ProgressCallback
+  ): Promise<BuildResult> {
+    const archFlags: Record<BuildParams["platform"], string[]> = {
+      switch: ["-march=armv8-a", "-mtune=cortex-a57", "-mtp=soft", "-fPIE"],
+      wii: ["-DGEKKO", "-mrvl", "-mcpu=750", "-meabi", "-mhard-float"],
+      gamecube: ["-DGEKKO", "-mogc", "-mcpu=750", "-meabi", "-mhard-float"],
+      n64: ["-march=vr4300"],
+      snes: []
+    };
     const LIBOGC_LIB: Record<"wii" | "gamecube", string> = {
       wii: `${DEVKITPRO}/libogc/lib/wii`,
       gamecube: `${DEVKITPRO}/libogc/lib/cube`
     };
 
-    // 1. Compilazione reale del sorgente C in un vero object file.
-    const compileArgs = [status.path, ...archFlags[params.platform], "-O2", "-c", sourceFile, "-o", objFile, `-I${join(import.meta.dir, "..", "include")}`];
-    if (params.platform === "switch") compileArgs.push(`-I${DEVKITPRO}/libnx/include`);
-    if (params.platform === "wii" || params.platform === "gamecube") compileArgs.push(`-I${LIBOGC_INC}`);
-    const proc = Bun.spawn(compileArgs, { stdout: "pipe", stderr: "pipe" });
-    const stderr = await new Response(proc.stderr).text();
-    const compileCode = await proc.exited;
-
-    if (compileCode !== 0 || !existsSync(objFile)) {
-      return {
-        success: false,
-        elfSize: 0,
-        outputBinaryName: "",
-        logs: `✗ Compilazione reale fallita con ${status.compiler}:\n${stderr.slice(-1500)}`,
-        compilerUsed: status.compiler,
-        packaged: false
-      };
-    }
-
     let linkLog = "";
     let linkedElf = false;
 
-    // 1b. Per Switch, link reale contro libnx (switch.specs reale di devkitPro)
-    // per produrre un ELF eseguibile vero, non solo un object file isolato.
-    if (params.platform === "switch" && existsSync(`${DEVKITPRO}/libnx/switch.specs`)) {
+    // Per Switch, link reale contro libnx (switch.specs reale di devkitPro)
+    // per produrre un ELF eseguibile vero, non solo object file isolati.
+    if (platform === "switch" && existsSync(`${DEVKITPRO}/libnx/switch.specs`)) {
+      onProgress({ stage: "link", status: "start", message: "Link reale contro libnx…" });
       const linkArgs = [
-        status.path, "-specs=" + `${DEVKITPRO}/libnx/switch.specs`,
+        status.path!, "-specs=" + `${DEVKITPRO}/libnx/switch.specs`,
         "-march=armv8-a", "-mtune=cortex-a57", "-mtp=soft", "-fPIE", "-Wl,-pie",
         // Fix reale verificato per l'errore del linker devkitA64
         // "read-only segment has dynamic relocations": è una regressione nota
@@ -187,7 +289,7 @@ export class CompilerPipeline {
         // per davvero: produce un ELF PIE valido che elf2nro converte in un
         // .nro reale con l'header "NRO0" corretto (non un file fittizio).
         "-Wl,-z,notext",
-        "-o", elfFile, objFile,
+        "-o", elfFile, ...objFiles,
         `-L${DEVKITPRO}/libnx/lib`, `-L${DEVKITPRO}/devkitA64/aarch64-none-elf/lib`,
         "-lnx"
       ];
@@ -196,22 +298,24 @@ export class CompilerPipeline {
       const linkCode = await linkProc.exited;
       linkedElf = linkCode === 0 && existsSync(elfFile);
       linkLog = linkedElf
-        ? `✓ Link reale contro libnx (switch.specs): OK`
+        ? `✓ Link reale contro libnx (switch.specs): OK (${objFiles.length} object file)`
         : `⚠ Compilazione a object file riuscita, ma il link reale contro libnx è fallito: ${linkErr.slice(-500)}`;
+      onProgress({ stage: "link", status: linkedElf ? "ok" : "fail", message: linkLog });
     }
 
-    // 1c. Per Wii/GameCube, link reale contro libogc (percorso reale letto
-    // da gamecube_rules/wii_rules: libogc/lib/cube o libogc/lib/wii) per
+    // Per Wii/GameCube, link reale contro libogc (percorso reale letto da
+    // gamecube_rules/wii_rules: libogc/lib/cube o libogc/lib/wii) per
     // produrre un ELF eseguibile vero, come per Switch sopra.
-    if ((params.platform === "wii" || params.platform === "gamecube") && existsSync(LIBOGC_LIB[params.platform])) {
-      const libDir = LIBOGC_LIB[params.platform];
+    if ((platform === "wii" || platform === "gamecube") && existsSync(LIBOGC_LIB[platform])) {
+      onProgress({ stage: "link", status: "start", message: "Link reale contro libogc…" });
+      const libDir = LIBOGC_LIB[platform];
       // Wii ha bisogno anche di -lwiiuse -lbte (controller Wiimote/Bluetooth),
       // reale dallo scaffold ufficiale WII_MAKEFILE (LIBS := -lwiiuse -lbte
       // -logc -lm) — GameCube no, non ha quell'hardware.
-      const libs = params.platform === "wii" ? ["-lwiiuse", "-lbte", "-logc", "-lm"] : ["-logc", "-lm"];
+      const libs = platform === "wii" ? ["-lwiiuse", "-lbte", "-logc", "-lm"] : ["-logc", "-lm"];
       const linkArgs = [
-        status.path, ...archFlags[params.platform],
-        "-o", elfFile, objFile,
+        status.path!, ...archFlags[platform],
+        "-o", elfFile, ...objFiles,
         `-L${libDir}`, ...libs
       ];
       const linkProc = Bun.spawn(linkArgs, { stdout: "pipe", stderr: "pipe", env: { ...process.env, DEVKITPRO } });
@@ -219,18 +323,21 @@ export class CompilerPipeline {
       const linkCode = await linkProc.exited;
       linkedElf = linkCode === 0 && existsSync(elfFile);
       linkLog = linkedElf
-        ? `✓ Link reale contro libogc (${libDir}): OK`
+        ? `✓ Link reale contro libogc (${libDir}): OK (${objFiles.length} object file)`
         : `⚠ Compilazione a object file riuscita, ma il link reale contro libogc è fallito: ${linkErr.slice(-500)}`;
+      onProgress({ stage: "link", status: linkedElf ? "ok" : "fail", message: linkLog });
     }
 
-    // 2. Packaging reale nel formato finale della console, se il tool esiste davvero.
+    // Packaging reale nel formato finale della console, se il tool esiste davvero.
     const packagingBin = packTool ? findPackagingTool(packTool) : "n/a (WLA-DX produce già il formato finale)";
-    let finalFile = linkedElf ? elfFile : objFile;
-    let packaged = params.platform === "snes"; // WLA-DX produce direttamente il .sfc, nessun secondo passo
+    let finalFile = linkedElf ? elfFile : objFiles[0];
+    let packaged = platform === "snes"; // WLA-DX produce direttamente il .sfc, nessun secondo passo
     let packagingLog = "";
 
     if (packTool && packagingBin && linkedElf) {
+      onProgress({ stage: "package", status: "start", message: `Packaging con ${packTool}…` });
       const outFile = join(tempDir, `nintendo_game_${stamp}${ext}`);
+      tempPaths.push(outFile);
       const packProc = Bun.spawn([packagingBin, elfFile, outFile], { stdout: "pipe", stderr: "pipe" });
       const packErr = await new Response(packProc.stderr).text();
       const packCode = await packProc.exited;
@@ -241,6 +348,7 @@ export class CompilerPipeline {
       } else {
         packagingLog = `⚠ Link riuscito, ma il packaging con ${packTool} è fallito: ${packErr.slice(-500)}\nViene restituito l'ELF linkato grezzo, NON un ${ext} funzionante.`;
       }
+      onProgress({ stage: "package", status: packaged ? "ok" : "fail", message: packagingLog });
     } else if (packTool && !linkedElf) {
       packagingLog = `⚠ Nessun ELF linkato disponibile: viene restituito l'object file grezzo (.o), NON un ${ext} funzionante.`;
     } else if (packTool && !packagingBin) {
@@ -249,10 +357,11 @@ export class CompilerPipeline {
     packagingLog = [linkLog, packagingLog].filter(Boolean).join("\n");
 
     const binaryData = readFileSync(finalFile);
+    cleanupTempFiles(tempPaths); // finalFile è già stato letto in memoria sopra: sicuro da cancellare
     return {
       success: true,
       elfSize: binaryData.length,
-      outputBinaryName: `game_${params.platform}${packaged ? ext : linkedElf ? ".elf" : ".o"}`,
+      outputBinaryName: `game_${platform}${packaged ? ext : linkedElf ? ".elf" : ".o"}`,
       outputBinaryBase64: binaryData.toString("base64"),
       logs: `✓ Compilato realmente con ${status.compiler} (${status.path})\n${packagingLog}`,
       compilerUsed: status.compiler,

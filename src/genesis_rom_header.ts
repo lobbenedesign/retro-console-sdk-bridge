@@ -177,3 +177,27 @@ export function fixGenesisChecksum(rom: Uint8Array, sgdk = false): { rom: Uint8A
   out[0x18f] = checksum & 0xff;
   return { rom: out, checksum };
 }
+
+/**
+ * Riscrive titolo domestico/internazionale e/o seriale nell'header Genesis,
+ * poi ricalcola SEMPRE il checksum (riusa fixGenesisChecksum già esistente
+ * e verificato) — formato Sega di default, `sgdk: true` per la variante XOR
+ * usata dalle ROM prodotte da SGDK. Ritorna una copia: i byte del client
+ * non vengono mai mutati in place.
+ */
+export function writeGenesisRomHeader(
+  rom: Uint8Array,
+  fields: { domesticTitle?: string; overseasTitle?: string; serial?: string },
+  sgdk = false
+): { rom: Uint8Array; checksum: number } {
+  const out = new Uint8Array(rom);
+  const writeField = (off: number, len: number, text: string) => {
+    const field = new Uint8Array(len).fill(0x20);
+    field.set(new TextEncoder().encode(text.toUpperCase().slice(0, len)));
+    out.set(field, off);
+  };
+  if (fields.domesticTitle !== undefined) writeField(0x120, 48, fields.domesticTitle);
+  if (fields.overseasTitle !== undefined) writeField(0x150, 48, fields.overseasTitle);
+  if (fields.serial !== undefined) writeField(0x180, 14, fields.serial);
+  return fixGenesisChecksum(out, sgdk);
+}

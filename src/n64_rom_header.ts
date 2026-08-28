@@ -97,3 +97,23 @@ export function parseN64RomHeader(rom: Uint8Array): N64RomHeader {
     looksLikeValidN64Rom
   };
 }
+
+/**
+ * Riscrive titolo/country/versione dell'header N64. Questi campi (0x20-0x33,
+ * 0x3E, 0x3F) sono FUORI dalla regione 0x1000..0x101000 che l'IPL3 usa per
+ * calcolare CRC1/CRC2 (vedi n64_crc.ts): modificarli non invalida il boot
+ * checksum, quindi qui non serve alcun ricalcolo. Ritorna una copia: i byte
+ * del client non vengono mai mutati in place.
+ */
+export function writeN64RomHeader(rom: Uint8Array, fields: { imageName?: string; countryCode?: number; version?: number }): Uint8Array {
+  if (rom.length < 0x40) throw new Error("Buffer troppo corto per contenere un header ROM N64 (minimo 64 byte).");
+  const out = new Uint8Array(rom);
+  if (fields.imageName !== undefined) {
+    const field = new Uint8Array(20).fill(0x20); // spazio ASCII: convenzione reale dei tool ufficiali (n64tool.c)
+    field.set(new TextEncoder().encode(fields.imageName.toUpperCase().slice(0, 20)));
+    out.set(field, 0x20);
+  }
+  if (fields.countryCode !== undefined) out[0x3e] = fields.countryCode & 0xff;
+  if (fields.version !== undefined) out[0x3f] = fields.version & 0xff;
+  return out;
+}

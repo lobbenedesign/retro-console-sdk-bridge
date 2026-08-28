@@ -17,34 +17,82 @@ import { parseF3dDisplayList, extractF3dMesh } from "./src/n64_f3d";
 import { scanRomSections, detectSplat, runSplatSplit } from "./src/n64_split";
 import { detectN64Recomp, generateRecompToml, runN64Recomp } from "./src/recomp";
 import { disassembleMips } from "./src/mips_disasm";
-import { parseSnesRomHeader } from "./src/snes_rom_header";
+import { parseSnesRomHeader, writeSnesRomHeader } from "./src/snes_rom_header";
 import { serializeF3dVertices, buildF3dDisplayList } from "./src/n64_f3d";
 import { identifyRomFile, identifyConsole } from "./src/rom_identify";
 import { unzip } from "./src/zip_reader";
 import { DASHBOARD_HTML } from "./src/dashboard_html";
-import { parseGenesisRomHeader, fixGenesisChecksum } from "./src/genesis_rom_header";
+import { parseGenesisRomHeader, fixGenesisChecksum, writeGenesisRomHeader } from "./src/genesis_rom_header";
 import { detectExtraToolchains, scaffoldExtra } from "./src/segasony_scaffold";
 import { openSectorReader } from "./src/psp_cso";
 import { listIsoFiles, extractIsoFile } from "./src/psp_iso";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
-import { parseN64RomHeader } from "./src/n64_rom_header";
+import { parseN64RomHeader, writeN64RomHeader } from "./src/n64_rom_header";
 import { decodeN64Texture, requiredByteLength, BITS_PER_PIXEL, type N64TextureFormat } from "./src/n64_texture";
 import { join } from "path";
 import { existsSync, writeFileSync } from "fs";
 
 const PORT = Number(process.env.PORT) || 3014;
 const pipeline = new CompilerPipeline();
+
+// Estrae solo i file sorgente/header rilevanti (.c/.cpp/.cc/.s/.h/.hpp) da
+// uno ZIP multi-file caricato dal client, riusando lo stesso unzip reale già
+// usato per identificare ROM in archivio — nessun secondo parser inventato.
+function sourceFilesFromZip(zipBytes: Uint8Array): Record<string, string> {
+  const entries = unzip(zipBytes);
+  const out: Record<string, string> = {};
+  const decoder = new TextDecoder();
+  for (const e of entries) {
+    if (e.name.endsWith("/")) continue; // voce directory, nessun dato da compilare
+    if (!/\.(c|cpp|cc|s|h|hpp)$/i.test(e.name)) continue;
+    out[e.name] = decoder.decode(e.data);
+  }
+  return out;
+}
+
 const server = Bun.serve({
   port: PORT,
-  async fetch(req) {
+  async fetch(req, srv) {
     const url = new URL(req.url);
 
-    const headers = {
+    // Endpoint WebSocket per il progresso di build in tempo reale (vedi
+    // sotto, sezione `websocket:`): niente più schermo nero fino al log
+    // finale in blocco unico, ogni fase reale (compile/link/package) di
+    // ogni file arriva al client non appena accade davvero. Nota: Bun ha un
+    // WebSocket server NATIVO (Bun.serve({websocket})), quindi qui non
+    // serve affatto la dipendenza npm "ws" installata (quella è un client
+    // WebSocket per Node, non un server — su Bun è ridondante). Rimossa da
+    // package.json invece di tenerla installata e mai importata.
+    if (url.pathname === "/ws/build") {
+      const requestOrigin = req.headers.get("Origin");
+      const selfOriginWs = `${url.protocol}//${url.host}`;
+      if (requestOrigin && requestOrigin !== selfOriginWs) {
+        return new Response("Origin non consentita.", { status: 403 });
+      }
+      if (srv.upgrade(req)) return undefined as unknown as Response;
+      return new Response("Upgrade WebSocket fallito.", { status: 400 });
+    }
+
+    // CORS ristretto alla stessa origine del dashboard, non un wildcard "*".
+    // Il dashboard è servito da questo stesso server (GET /), quindi le sue
+    // richieste sono same-origin e non hanno mai bisogno di header CORS. Un
+    // wildcard qui significava che QUALSIASI sito web aperto in un'altra
+    // scheda del browser, mentre questo server gira in locale, poteva
+    // chiamare /api/build (compilazione reale di C fornito dal chiamante
+    // tramite un vero compilatore) o gli endpoint del patcher ROM in
+    // background, a insaputa dell'utente — un attacco CSRF/DNS-rebinding
+    // contro un tool locale, non ipotetico dato che qui si esegue un vero
+    // toolchain di compilazione. Ristretto all'origine reale del server.
+    const selfOrigin = `${url.protocol}//${url.host}`;
+    const requestOrigin = req.headers.get("Origin");
+    const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type"
     };
+    if (requestOrigin && requestOrigin === selfOrigin) {
+      headers["Access-Control-Allow-Origin"] = requestOrigin;
+    }
 
     if (req.method === "OPTIONS") return new Response(null, { headers });
 
@@ -53,13 +101,21 @@ const server = Bun.serve({
       return new Response(DASHBOARD_HTML, { headers: { "Content-Type": "text/html" } });
     }
 
-    // 2. Build API
+    // 2. Build API — accetta tre modalità reali: singolo file inline
+    // (sourceCode, sempre esistita), multi-file esplicito (sourceFiles:
+    // {nomefile: contenuto}), o uno ZIP di sorgenti (zipBase64, sbustato
+    // realmente con lo stesso lettore ZIP già usato per identificare le
+    // ROM — nessun secondo parser inventato per questo caso d'uso).
     if (url.pathname === "/api/build" && req.method === "POST") {
       try {
         const body: any = await req.json();
+        const sourceFiles = body.zipBase64
+          ? sourceFilesFromZip(new Uint8Array(Buffer.from(body.zipBase64, "base64")))
+          : body.sourceFiles;
         const result = await pipeline.compile({
           platform: body.platform,
-          sourceCode: body.sourceCode
+          sourceCode: body.sourceCode,
+          sourceFiles
         });
         return new Response(JSON.stringify(result), { headers });
       } catch (e: any) {
@@ -151,6 +207,30 @@ const server = Bun.serve({
           storedChecksum: "0x" + h.storedChecksum.toString(16).toUpperCase(),
           computedChecksum: "0x" + h.computedChecksum.toString(16).toUpperCase(),
           computedChecksumSgdk: "0x" + h.computedChecksumSgdk.toString(16).toUpperCase(),
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 4c2. Editor header ROM Genesis/Mega Drive — riscrive titoli/seriale e
+    // ricalcola SEMPRE il checksum (riusa fixGenesisChecksum). Dietro lo
+    // stesso gate di dichiarazione del patcher/CRC-fix N64.
+    if (url.pathname === "/api/genesis/rom-header/write" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        if (!verifyToken(body.token, body.fullName)) {
+          return new Response(JSON.stringify({ error: "Dichiarazione non valida o mancante (stesso gate del patcher)." }), { status: 403, headers });
+        }
+        const rom = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        const { rom: out, checksum } = writeGenesisRomHeader(rom, {
+          domesticTitle: body.domesticTitle,
+          overseasTitle: body.overseasTitle,
+          serial: body.serial,
+        }, !!body.sgdk);
+        return new Response(JSON.stringify({
+          romBase64: Buffer.from(out).toString("base64"), size: out.length,
+          checksum: "0x" + checksum.toString(16).toUpperCase(),
         }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
@@ -314,6 +394,27 @@ const server = Bun.serve({
         const bytes = new Uint8Array(Buffer.from(body.bytesBase64 || "", "base64"));
         const header = parseN64RomHeader(bytes);
         return new Response(JSON.stringify(header), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 12b. Editor header ROM N64 — riscrive titolo/country/versione e
+    // ritorna la ROM intera modificata. Dietro lo stesso gate di
+    // dichiarazione del patcher/CRC-fix: è una scrittura reale sulla ROM.
+    if (url.pathname === "/api/n64/rom-header/write" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        if (!verifyToken(body.token, body.fullName)) {
+          return new Response(JSON.stringify({ error: "Dichiarazione non valida o mancante (stesso gate del patcher)." }), { status: 403, headers });
+        }
+        const rom = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        const out = writeN64RomHeader(rom, {
+          imageName: body.imageName,
+          countryCode: typeof body.countryCode === "number" ? body.countryCode : undefined,
+          version: typeof body.version === "number" ? body.version : undefined,
+        });
+        return new Response(JSON.stringify({ romBase64: Buffer.from(out).toString("base64"), size: out.length }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
       }
@@ -545,6 +646,32 @@ const server = Bun.serve({
       }
     }
 
+    // 13n2. Editor header ROM SNES — riscrive titolo/versione/destinazione
+    // e ricalcola SEMPRE il checksum reale (il titolo è coperto dal
+    // checksum). Dietro lo stesso gate di dichiarazione del patcher.
+    if (url.pathname === "/api/snes/rom-header/write" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        if (!verifyToken(body.token, body.fullName)) {
+          return new Response(JSON.stringify({ error: "Dichiarazione non valida o mancante (stesso gate del patcher)." }), { status: 403, headers });
+        }
+        const rom = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        const parsed = parseSnesRomHeader(rom); // per ritrovare l'headerOffset reale della mappatura rilevata
+        const { rom: out, checksum, complement } = writeSnesRomHeader(rom, parsed.headerOffset, {
+          title: body.title,
+          version: typeof body.version === "number" ? body.version : undefined,
+          destination: typeof body.destination === "number" ? body.destination : undefined,
+        });
+        return new Response(JSON.stringify({
+          romBase64: Buffer.from(out).toString("base64"), size: out.length,
+          checksum: "0x" + checksum.toString(16).toUpperCase(),
+          checksumComplement: "0x" + complement.toString(16).toUpperCase(),
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
     // 13o. Identificazione automatica ROM: accetta ROM nuda o ZIP (estratto
     // realmente in memoria), riconosce la console dai magic header e
     // converte automaticamente N64 .v64/.n64 in .z64 per i nostri tool.
@@ -661,7 +788,28 @@ const server = Bun.serve({
     }
 
     return new Response("Not Found", { status: 404 });
-  }
+  },
+  websocket: {
+    // Un solo messaggio JSON per connessione: { platform, sourceCode? |
+    // sourceFiles? | zipBase64? }. La build reale gira UNA volta, con
+    // pipeline.compile() che invia ogni fase reale via onProgress non
+    // appena accade — non un progress bar finta a intervalli fissi.
+    async message(ws, raw) {
+      try {
+        const body: any = JSON.parse(String(raw));
+        const sourceFiles = body.zipBase64
+          ? sourceFilesFromZip(new Uint8Array(Buffer.from(body.zipBase64, "base64")))
+          : body.sourceFiles;
+        const result = await pipeline.compile(
+          { platform: body.platform, sourceCode: body.sourceCode, sourceFiles },
+          (event) => { try { ws.send(JSON.stringify({ type: "progress", ...event })); } catch {} }
+        );
+        ws.send(JSON.stringify({ type: "done", result }));
+      } catch (e: any) {
+        try { ws.send(JSON.stringify({ type: "error", message: e.message })); } catch {}
+      }
+    },
+  },
 });
 
 console.log(`\n======================================================`);

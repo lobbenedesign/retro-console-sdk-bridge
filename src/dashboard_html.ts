@@ -118,6 +118,7 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
   <button class="navbtn" data-view="split">📦 Split &amp; Compressione</button>
   <button class="navbtn" data-view="graphics">🎨 Texture &amp; 3D</button>
   <button class="navbtn" data-view="level">🗺 Level Script</button>
+  <button class="navbtn" data-view="psp">📀 PSP Filesystem</button>
   <div class="navsep">Avanzate</div>
   <button class="navbtn" data-view="code">🧠 Disassembler</button>
   <button class="navbtn" data-view="patch">🩹 Patcher &amp; CRC</button>
@@ -268,6 +269,22 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     </div>
     <div class="log" id="ls-log" style="margin-top:10px">—</div>
     <div id="ls-table" style="max-height:400px; overflow-y:auto; margin-top:10px"></div>
+  </div>
+</section>
+
+<!-- ============ VISTA: PSP FILESYSTEM ============ -->
+<section class="view" data-view="psp">
+  <h1>PSP Filesystem (ISO / CSO)</h1>
+  <p class="sub">Apri l'immagine di un gioco PSP (.iso o .cso): l'app legge il filesystem ISO9660 reale
+  (il CSO viene decompresso settore per settore) ed estrae i singoli file — che diventano il <b>blob corrente</b>
+  per texture, disassembler e patcher. Nota onesta: l'immagine viaggia in memoria, pratica fino a ~1GB.</p>
+  <div class="card">
+    <div class="row">
+      <div class="field">Immagine .iso / .cso<input type="file" id="psp-file" accept=".iso,.cso,.bin" /></div>
+      <button class="btn pri" onclick="pspListUI()">Apri filesystem</button>
+    </div>
+    <div class="log" id="psp-log" style="margin-top:10px">—</div>
+    <div id="psp-table" style="max-height:420px; overflow-y:auto; margin-top:10px"></div>
   </div>
 </section>
 
@@ -740,6 +757,48 @@ async function lsSaveUI() {
   setBlob(fromB64(d.bytesBase64), "levelscript_edited");
   setFlow("fs-export", true);
   log("ls-log", "✓ Riserializzati " + d.size + " byte → ora è il blob corrente (ricomprimibile nella vista Split).", "var(--ok)");
+}
+
+// ================= VISTA PSP FILESYSTEM =================
+let pspImage = null; // Uint8Array dell'immagine caricata in questa vista
+$("psp-file").addEventListener("change", async e => { if (e.target.files[0]) pspImage = await fileToBytes(e.target.files[0]); });
+
+async function pspListUI() {
+  const log = $("psp-log"), table = $("psp-table");
+  table.innerHTML = "";
+  if (!pspImage) { log.textContent = "Seleziona un'immagine .iso o .cso."; log.style.color = "var(--err)"; return; }
+  log.textContent = "⚡ Lettura filesystem ISO9660 reale (decompressione CSO a settori se serve)…"; log.style.color = "var(--warn)";
+  try {
+    const d = await api("/api/psp/fs/list", { imageBase64: toB64(pspImage) });
+    if (d.error) { log.textContent = "✗ " + d.error; log.style.color = "var(--err)"; return; }
+    log.style.color = d.isLikelyPsp ? "var(--ok)" : "var(--warn)";
+    log.textContent = "✓ " + d.format + " · " + (d.isLikelyPsp ? "disco PSP confermato (PSP_GAME)" : "ISO9660 valido (PSP_GAME non trovato in radice)") +
+      "\\nVolume: " + (d.volumeId || "(senza nome)") + " · " + d.entryCount + " voci · " + (d.totalSectors * 2048 / 1024 / 1024).toFixed(0) + " MB decompressi" +
+      (d.truncated ? " (elenco troncato ai primi 500)" : "");
+    let html = '<table class="tbl"><tr><th>Percorso</th><th>Dimensione</th><th></th></tr>';
+    d.entries.forEach(e => {
+      if (!e.isDir) {
+        html += '<tr><td>' + e.path + '</td><td>' + kb(e.size) +
+          '</td><td><button class="btn pri mini" onclick="pspExtract(' + "'" + e.path.replace(/'/g, "\\'") + "'" + ')">Estrai → blob</button></td></tr>';
+      } else {
+        html += '<tr><td><strong>' + e.path + '/</strong></td><td class="muted">dir</td><td></td></tr>';
+      }
+    });
+    table.innerHTML = html + "</table>";
+  } catch (e) { log.textContent = "Errore: " + e.message; log.style.color = "var(--err)"; }
+}
+
+async function pspExtract(path) {
+  const log = $("psp-log");
+  log.textContent = "⚡ Estrazione reale di " + path + "…"; log.style.color = "var(--warn)";
+  try {
+    const d = await api("/api/psp/fs/extract", { imageBase64: toB64(pspImage), path });
+    if (d.error) { log.textContent = "✗ " + d.error; log.style.color = "var(--err)"; return; }
+    setBlob(fromB64(d.fileBase64), path.split("/").pop());
+    setFlow("fs-edit", true);
+    log.style.color = "var(--ok)";
+    log.textContent = "✓ " + path + " (" + d.size + " byte) → blob corrente. Usabile in Texture & 3D, Disassembler, Level Script.";
+  } catch (e) { log.textContent = "Errore: " + e.message; log.style.color = "var(--err)"; }
 }
 
 // ================= VISTA DISASSEMBLER =================

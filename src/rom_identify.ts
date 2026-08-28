@@ -106,6 +106,17 @@ export function identifyConsole(rom: Uint8Array): ConsoleMatch {
     return { console: "Sony PlayStation Portable", format: "PBP (EBOOT.PBP)", confidence: "magic", detail: "Firma \"\\0PBP\" a offset 0: contenitore PBP (EBOOT homebrew o update ufficiale)." };
   }
 
+  // PSP: ISO del gioco — il system identifier del Primary Volume Descriptor
+  // ISO9660 (settore 16, offset 8) è "PLAYSTATION" sui dischi UMD reali
+  // (stesso check strutturale usato dai tool della scena PSP)
+  if (rom.length >= 16 * 2048 + 32) {
+    const pvd = rom.slice(16 * 2048, 16 * 2048 + 32);
+    if (String.fromCharCode(...pvd.slice(1, 6)) === "CD001" &&
+        String.fromCharCode(...pvd.slice(8, 19)) === "PLAYSTATION") {
+      return { console: "Sony PlayStation Portable", format: "ISO (UMD dump)", confidence: "magic", detail: "PVD ISO9660 con system id \"PLAYSTATION\": immagine disco di un gioco PSP." };
+    }
+  }
+
   // SNES: nessun magic fisso — prova gli offset header con checksum (euristica)
   if (rom.length >= 0x8000) {
     try {

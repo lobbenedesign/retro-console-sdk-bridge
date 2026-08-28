@@ -24,6 +24,8 @@ import { unzip } from "./src/zip_reader";
 import { DASHBOARD_HTML } from "./src/dashboard_html";
 import { parseGenesisRomHeader, fixGenesisChecksum } from "./src/genesis_rom_header";
 import { detectExtraToolchains, scaffoldExtra } from "./src/segasony_scaffold";
+import { openSectorReader } from "./src/psp_cso";
+import { listIsoFiles, extractIsoFile } from "./src/psp_iso";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
 import { parseN64RomHeader } from "./src/n64_rom_header";
 import { decodeN64Texture, requiredByteLength, BITS_PER_PIXEL, type N64TextureFormat } from "./src/n64_texture";
@@ -89,6 +91,52 @@ const server = Bun.serve({
     // rilevamento reale, "non installato" onesto con istruzioni vere.
     if (url.pathname === "/api/toolchains/extra" && req.method === "GET") {
       return new Response(JSON.stringify(detectExtraToolchains()), { headers });
+    }
+
+    // 4e. PSP — filesystem dell'immagine (ISO o CSO trasparente): elenco
+    // reale dei file del disco. Nota onesta: l'immagine arriva in base64
+    // dal client (nessuna persistenza server): praticabile fino a ~1GB.
+    if (url.pathname === "/api/psp/fs/list" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const image = new Uint8Array(Buffer.from(body.imageBase64 || "", "base64"));
+        if (image.length < 17 * 2048) return new Response(JSON.stringify({ error: "Immagine troppo corta per un ISO9660 (min LBA 16 + PVD)." }), { status: 400, headers });
+        const reader = openSectorReader(image);
+        const listing = listIsoFiles(reader);
+        return new Response(JSON.stringify({
+          format: image[0] === 0x43 && image[1] === 0x49 ? "CSO" : "ISO",
+          systemId: listing.systemId,
+          volumeId: listing.volumeId,
+          isLikelyPsp: listing.isLikelyPsp,
+          totalSectors: reader.numSectors(),
+          entries: listing.entries.slice(0, 500).map((e) => ({
+            path: e.path, isDir: e.isDir, size: e.size,
+            lba: e.isDir ? undefined : e.lba,
+          })),
+          entryCount: listing.entries.length,
+          truncated: listing.entries.length > 500,
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 4f. PSP — estrazione reale di un file dall'immagine per percorso.
+    if (url.pathname === "/api/psp/fs/extract" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const image = new Uint8Array(Buffer.from(body.imageBase64 || "", "base64"));
+        const reader = openSectorReader(image);
+        const listing = listIsoFiles(reader);
+        const file = extractIsoFile(reader, listing.entries, body.path || "");
+        return new Response(JSON.stringify({
+          path: body.path,
+          size: file.length,
+          fileBase64: Buffer.from(file).toString("base64"),
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
     }
 
     // 4c. Header ROM Genesis/Mega Drive + verifica checksum (algoritmo Sega

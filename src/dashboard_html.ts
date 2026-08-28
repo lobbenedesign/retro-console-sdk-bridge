@@ -891,19 +891,21 @@ const PLATS = [
   ["psp", "Sony PSP", "MIPS32 · PSPSDK · solo scaffold"],
 ];
 const SCAFFOLD_ONLY = ["genesis", "dreamcast", "psp"];
-const DEFAULT_CODE = "// Codice sorgente con astrazione nintendo_hal.h
-#include <nintendo_hal.h>
-
-int main() {
-    NintendoInitConsole();
-    NintendoGamepad gp = {0};
-    while (1) {
-        NintendoUpdateGamepad(&gp);
-        if (NintendoIsButtonPressed(&gp, 3)) break; // Start
-        NintendoRefreshScreen();
-    }
-    return 0;
-}";
+const DEFAULT_CODE = [
+  "// Codice sorgente con astrazione nintendo_hal.h",
+  "#include <nintendo_hal.h>",
+  "",
+  "int main() {",
+  "    NintendoInitConsole();",
+  "    NintendoGamepad gp = {0};",
+  "    while (1) {",
+  "        NintendoUpdateGamepad(&gp);",
+  "        if (NintendoIsButtonPressed(&gp, 3)) break; // Start",
+  "        NintendoRefreshScreen();",
+  "    }",
+  "    return 0;",
+  "}"
+].join("\\n");
 function renderPlats() {
   $("platgrid").innerHTML = PLATS.map(p =>
     '<button class="plat' + (p[0] === activePlatform ? " active" : "") + '" data-p="' + p[0] + '">' + p[1] + "<small>" + p[2] + "</small></button>").join("");

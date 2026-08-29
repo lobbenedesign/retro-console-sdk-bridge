@@ -187,6 +187,8 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     <div class="row">
       <button class="btn dark" onclick="inspectHeadersUI()">Leggi header N64</button>
       <button class="btn dark" onclick="inspectHeadersUI(true)">Leggi header SNES</button>
+      <button class="btn dark" onclick="gbaHeaderUI()">Leggi header GBA</button>
+      <button class="btn pri" id="gba-fix" style="display:none" onclick="gbaFixUI()">Fix complement GBA</button>
     </div>
     <div class="log" id="hdr-log" style="margin-top:10px">—</div>
   </div>
@@ -261,7 +263,7 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
       <div class="field">Altezza<input type="number" id="tex-h" value="32" style="width:70px" /></div>
       <div class="field">Formato<select id="tex-format">
         <option>RGBA16</option><option>RGBA32</option><option>IA16</option><option>IA8</option>
-        <option>IA4</option><option>I8</option><option>I4</option><option>CI4</option><option>CI8</option>
+        <option>IA4</option><option>I8</option><option>I4</option><option>CI4</option><option>CI8</option><option>GIM (PSP)</option>
       </select></div>
       <div class="field">Offset nel blob<input type="number" id="tex-off" value="0" style="width:80px" /></div>
     </div>
@@ -677,6 +679,29 @@ async function loadRom(file) {
   } catch (e) { log("rom-log", "Errore: " + e.message, "var(--err)"); }
 }
 
+async function gbaHeaderUI() {
+  if (!state.rom) { log("hdr-log", "Prima carica una ROM (GBA) nella vista ROM.", "var(--err)"); return; }
+  log("hdr-log", "⚡ Lettura header GBA…", "var(--warn)");
+  const d = await api("/api/gba/rom-header", { romBase64: toB64(state.rom) });
+  if (d.error) { log("hdr-log", "✗ " + d.error, "var(--err)"); return; }
+  $("gba-fix").style.display = d.complementValid ? "none" : "inline-block";
+  log("hdr-log", (d.logoValid ? "✓ Logo Nintendo verificato" : "⚠ logo assente: potrebbe non essere una GBA") +
+    "\\nTitolo: " + (d.title || "(vuoto)") + " · Codice: " + (d.gameCode || "—") + " · Produttore: " + (d.makerCode || "—") +
+    "\\nUnit: " + d.unitCode + " · 0x96 fisso: " + (d.fixed96 ? "✓" : "✗") + " · Versione: " + d.version +
+    "\\nComplement: memorizzato " + d.storedComplement + " · calcolato " + d.computedComplement +
+    (d.complementValid ? " ✓ valido" : " ⚠ NON valido (usa il pulsante Fix)"),
+    d.complementValid ? "var(--ok)" : "var(--warn)");
+}
+async function gbaFixUI() {
+  if (!state.declToken) { log("hdr-log", "✗ Serve la dichiarazione (vista Patcher & CRC).", "var(--err)"); return; }
+  const d = await api("/api/gba/checksum/fix", { fullName: state.declName, token: state.declToken, romBase64: toB64(state.rom) });
+  if (d.error) { log("hdr-log", "✗ " + d.error, "var(--err)"); return; }
+  state.rom = fromB64(d.romBase64);
+  refreshChips();
+  log("hdr-log", "✓ Complement riscritto: " + d.complement + ". ROM corrente aggiornata.", "var(--ok)");
+  download(state.rom, state.romName.replace(/\.[^.]+$/, "") + "_gbafix.gba", "Scarica ROM con complement corretto (" + kb(d.size) + ")");
+}
+
 async function inspectHeadersUI(snes) {
   if (!state.rom) { log("hdr-log", "Prima carica una ROM nella vista ROM.", "var(--err)"); return; }
   log("hdr-log", "⚡ Lettura header reale…", "var(--warn)");
@@ -831,7 +856,9 @@ async function compUI(fmt) {
 $("tex-format").addEventListener("change", e => { $("tex-pal-row").style.display = (e.target.value === "CI4" || e.target.value === "CI8") ? "flex" : "none"; });
 
 async function decodeTexUI() {
-  const fmt = $("tex-format").value, w = +$("tex-w").value, h = +$("tex-h").value, off = +$("tex-off").value;
+  const fmt = $("tex-format").value, off = +$("tex-off").value;
+  if (fmt === "GIM (PSP)") { await decodeGimUI(); return; }
+  const w = +$("tex-w").value, h = +$("tex-h").value;
   let data = null;
   if ($("tex-use-blob").checked && state.blob) data = state.blob.slice(off);
   else if ($("tex-file").files[0]) data = await fileToBytes($("tex-file").files[0]);
@@ -849,6 +876,20 @@ async function decodeTexUI() {
   const ctx = cv.getContext("2d");
   ctx.putImageData(new ImageData(new Uint8ClampedArray(fromB64(d.rgbaBase64)), d.width, d.height), 0, 0);
   log("tex-log", "✓ Texture decodificata (" + fmt + ", " + d.width + "x" + d.height + ").", "var(--ok)");
+}
+
+async function decodeGimUI() {
+  let data = null;
+  if ($("tex-use-blob").checked && state.blob) data = state.blob;
+  else if ($("tex-file").files[0]) data = await fileToBytes($("tex-file").files[0]);
+  if (!data) { log("tex-log", "Nessun blob corrente né file GIM.", "var(--err)"); return; }
+  log("tex-log", "⚡ Decodifica GIM reale (formati GE PSP)…", "var(--warn)");
+  const d = await api("/api/psp/gim/decode", { dataBase64: toB64(data) });
+  if (d.error) { log("tex-log", "✗ " + d.error, "var(--err)"); return; }
+  const cv = $("tex-canvas"); cv.width = d.width; cv.height = d.height;
+  const ctx = cv.getContext("2d");
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(fromB64(d.rgbaBase64)), d.width, d.height), 0, 0);
+  log("tex-log", "✓ GIM decodificato: " + d.width + "x" + d.height + ", formato " + d.format + ".", "var(--ok)");
 }
 
 async function f3dParseUI() {

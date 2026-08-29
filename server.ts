@@ -26,6 +26,8 @@ import { parseGenesisRomHeader, fixGenesisChecksum, writeGenesisRomHeader } from
 import { detectExtraToolchains, scaffoldExtra } from "./src/segasony_scaffold";
 import { openSectorReader, isCso } from "./src/psp_cso";
 import { listIsoFiles, extractIsoFile } from "./src/psp_iso";
+import { decodeGim } from "./src/psp_gim";
+import { parseGbaRomHeader, fixGbaComplement } from "./src/gba_rom_header";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
 import { parseN64RomHeader, writeN64RomHeader } from "./src/n64_rom_header";
 import { decodeN64Texture, requiredByteLength, BITS_PER_PIXEL, type N64TextureFormat } from "./src/n64_texture";
@@ -194,6 +196,57 @@ const server = Bun.serve({
           path: body.path,
           size: file.length,
           fileBase64: Buffer.from(file).toString("base64"),
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 4a2. PSP — decoder texture GIM reale (formati GE 5650/5551/4444/8888
+    // + indicizzati P4/P8 con palette, de-swizzle tiled).
+    if (url.pathname === "/api/psp/gim/decode" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const data = new Uint8Array(Buffer.from(body.dataBase64 || "", "base64"));
+        const img = decodeGim(data);
+        return new Response(JSON.stringify({
+          width: img.width, height: img.height, format: img.format,
+          rgbaBase64: Buffer.from(img.rgba).toString("base64"),
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 4a3. Header GBA + complement check (algoritmo BIOS, GBATEK).
+    if (url.pathname === "/api/gba/rom-header" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const rom = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        const h = parseGbaRomHeader(rom);
+        return new Response(JSON.stringify({
+          ...h,
+          storedComplement: "0x" + h.storedComplement.toString(16).toUpperCase().padStart(2, "0"),
+          computedComplement: "0x" + h.computedComplement.toString(16).toUpperCase().padStart(2, "0"),
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 4a4. Fix complement GBA (0xBD) — dietro gate di dichiarazione.
+    if (url.pathname === "/api/gba/checksum/fix" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        if (!verifyToken(body.token, body.fullName)) {
+          return new Response(JSON.stringify({ error: "Dichiarazione non valida o mancante (stesso gate del patcher)." }), { status: 403, headers });
+        }
+        const rom = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
+        const { rom: fixed, complement } = fixGbaComplement(rom);
+        return new Response(JSON.stringify({
+          complement: "0x" + complement.toString(16).toUpperCase().padStart(2, "0"),
+          romBase64: Buffer.from(fixed).toString("base64"),
+          size: fixed.length,
         }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });

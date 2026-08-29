@@ -528,6 +528,15 @@ pannelli indipendenti che richiedevano ciascuno il proprio upload; ora:
   Riconosce N64 (z64/v64/n64 con conversione automatica a z64), SNES, NES,
   GB/GBC, GBA, NDS, Mega Drive, GameCube, Wii. Le voci non-ROM dentro lo
   ZIP (readme ecc.) vengono marcate "ignorata", mai far fallire il resto.
+- `POST /api/psp/gim/decode` — `{ dataBase64 }` → decoder texture **GIM**
+  PSP reale (formati GE 5650/5551/4444/8888 + indicizzati P4/P8 con palette,
+  de-swizzle tiled; DXT/pa8 → rifiuto onesto). Struttura trascritta da
+  GeofrontTeam/LibPSPThemes gim.py (GPL: solo riferimento di formato).
+- `POST /api/gba/rom-header` / `POST /api/gba/checksum/fix` — header GBA
+  (GBATEK) + complement check a 0xBD con l'algoritmo ESATTO di
+  devkitPro gbafix (verificato contro due fonti: la formula -b-1×29 di
+  ezgba differiva di 4 e scartata).
+-
 - `POST /api/psp/fs/list` — `{ imageBase64 }` → filesystem ISO9660 reale di
   un gioco PSP da **ISO o CSO** (decompressione CSO settore-per-settore,
   spec trascritta dal reader reale di ppsspp, GPL usata solo come

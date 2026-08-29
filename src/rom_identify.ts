@@ -100,6 +100,14 @@ export function identifyConsole(rom: Uint8Array): ConsoleMatch {
     return { console: "Nintendo Wii", format: "ISO/WBFS-origin", confidence: "magic", detail: "Disc magic 0x5D1C9EA3 a 0x18." };
   }
 
+  // PSP: EBOOT.BIN/module cifrato — firma "~PSP" (0x7E 0x50 0x53 0x50),
+  // usata dai moduli kernel/user cifrati (formato documentato pubblicamente
+  // dalla scena pspdev). Decifrazione NON offerta da questo studio: detto
+  // onestamente nel dettaglio.
+  if (startsWith(rom, 0, [0x7e, 0x50, 0x53, 0x50])) {
+    return { console: "Sony PlayStation Portable", format: "modulo cifrato (~PSP)", confidence: "magic", detail: "Firma ~PSP: EBOOT.BIN/module PSP CIFRATO. Questo studio non lo decifra (servono tool dedicati della scena su un firmware con chiavi); i file DATA.PSP/etc dentro l'ISO spesso sono cifrati così." };
+  }
+
   // PSP: PBP header reale ("\\0PBP" a offset 0 — formato documentato
   // pubblicamente, usato da EBOOT.PBP e PBP tools della community pspdev)
   if (startsWith(rom, 0, [0x00, 0x50, 0x42, 0x50])) {

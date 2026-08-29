@@ -243,6 +243,8 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
       <button class="btn dark" onclick="decompUI('yay0')">Decomprimi Yay0</button>
       <button class="btn dark" onclick="compUI('mio0')">Comprimi MIO0</button>
       <button class="btn dark" onclick="compUI('yay0')">Comprimi Yay0</button>
+      <button class="btn purple" onclick="kosUI('decompress')">Kosinski (MD): decomprimi</button>
+      <button class="btn purple" onclick="kosUI('compress')">Kosinski (MD): comprimi</button>
     </div>
     <div class="log" id="comp-log" style="margin-top:10px">—</div>
     <div id="comp-dl"></div>
@@ -818,6 +820,26 @@ async function decompBlock(i) {
     log("scan-log", "✓ Blocco " + s.offset + " decompresso: " + d.decompressedSize + " byte → ora è il blob corrente (vedi chip in alto).\\nDisponibile per Texture/3D, Level Script e Disassembler.", "var(--ok)");
     setFlow("fs-edit", true);
   } catch (e) { log("scan-log", "Errore: " + e.message, "var(--err)"); }
+}
+
+async function kosUI(mode) {
+  const f = $("comp-file").files[0];
+  const src = mode === "compress" ? (state.blob || (f ? await fileToBytes(f) : null)) : (f ? await fileToBytes(f) : state.blob);
+  if (!src) { log("comp-log", "Seleziona un file (o crea un blob per comprimere).", "var(--err)"); return; }
+  log("comp-log", "⚡ Kosinski " + mode + " reale (formato Mega Drive)...", "var(--warn)");
+  const d = await api("/api/md/kosinski/" + mode, { dataBase64: toB64(src) });
+  if (d.error) { log("comp-log", "✗ " + d.error, "var(--err)"); return; }
+  if (mode === "decompress") {
+    const bytes = fromB64(d.decompressedBase64);
+    setBlob(bytes, "kosinski-decomp");
+    log("comp-log", "✓ Decompresso: " + d.decompressedSize + " byte → blob corrente.", "var(--ok)");
+  } else {
+    const bytes = fromB64(d.compressedBase64);
+    log("comp-log", "✓ Compresso: " + src.length + " → " + d.compressedSize + " byte.", "var(--ok)");
+    $("comp-dl").innerHTML = "";
+    download(bytes, "kosinski.kos", "Scarica blocco Kosinski (" + kb(d.compressedSize) + ")", "comp-dl");
+    setFlow("fs-export", true);
+  }
 }
 
 async function splatSplitUI() {

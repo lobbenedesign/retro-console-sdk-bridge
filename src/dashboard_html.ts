@@ -244,6 +244,7 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
       <button class="btn dark" onclick="compUI('mio0')">Comprimi MIO0</button>
       <button class="btn dark" onclick="compUI('yay0')">Comprimi Yay0</button>
       <button class="btn purple" onclick="kosUI('decompress')">Kosinski (MD): decomprimi</button>
+      <button class="btn dark" onclick="nemUI()">Nemesis (MD): decomprimi</button>
       <button class="btn purple" onclick="kosUI('compress')">Kosinski (MD): comprimi</button>
     </div>
     <div class="log" id="comp-log" style="margin-top:10px">—</div>
@@ -820,6 +821,18 @@ async function decompBlock(i) {
     log("scan-log", "✓ Blocco " + s.offset + " decompresso: " + d.decompressedSize + " byte → ora è il blob corrente (vedi chip in alto).\\nDisponibile per Texture/3D, Level Script e Disassembler.", "var(--ok)");
     setFlow("fs-edit", true);
   } catch (e) { log("scan-log", "Errore: " + e.message, "var(--err)"); }
+}
+
+async function nemUI() {
+  const f = $("comp-file").files[0];
+  const src = f ? await fileToBytes(f) : state.blob;
+  if (!src) { log("comp-log", "Seleziona un file Nemesis (o crea un blob).", "var(--err)"); return; }
+  log("comp-log", "⚡ Nemesis decompressione reale (art/tile Mega Drive)...", "var(--warn)");
+  const d = await api("/api/md/nemesis/decompress", { dataBase64: toB64(src) });
+  if (d.error) { log("comp-log", "✗ " + d.error, "var(--err)"); return; }
+  const bytes = fromB64(d.decompressedBase64);
+  setBlob(bytes, "nemesis-decomp");
+  log("comp-log", "✓ Decompresso: " + d.decompressedSize + " byte (" + (d.decompressedSize / 32) + " tile da 32 B) → blob corrente.", "var(--ok)");
 }
 
 async function kosUI(mode) {

@@ -29,6 +29,7 @@ import { listIsoFiles, extractIsoFile } from "./src/psp_iso";
 import { decodeGim } from "./src/psp_gim";
 import { parseGbaRomHeader, fixGbaComplement } from "./src/gba_rom_header";
 import { kosinskiDecompress, kosinskiCompress } from "./src/md_kosinski";
+import { nemesisDecompress } from "./src/md_nemesis";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
 import { parseN64RomHeader, writeN64RomHeader } from "./src/n64_rom_header";
 import { decodeN64Texture, requiredByteLength, BITS_PER_PIXEL, type N64TextureFormat } from "./src/n64_texture";
@@ -223,6 +224,20 @@ const server = Bun.serve({
         if (data.length === 0) return new Response(JSON.stringify({ error: "dataBase64 vuoto." }), { status: 400, headers });
         const out = kosinskiCompress(data);
         return new Response(JSON.stringify({ compressedBase64: Buffer.from(out).toString("base64"), compressedSize: out.length }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 4l. Mega Drive — decompressore Nemesis (art/tile). Solo decompressione:
+    // l'encoder (tabella codici ottimale) non è implementato — dichiarato.
+    if (url.pathname === "/api/md/nemesis/decompress" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const data = new Uint8Array(Buffer.from(body.dataBase64 || "", "base64"));
+        if (data.length < 3) return new Response(JSON.stringify({ error: "Dati Nemesis troppo corti." }), { status: 400, headers });
+        const out = nemesisDecompress(data);
+        return new Response(JSON.stringify({ decompressedBase64: Buffer.from(out).toString("base64"), decompressedSize: out.length }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
       }

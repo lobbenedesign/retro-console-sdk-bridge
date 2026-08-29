@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { nemesisDecompress } from "../src/md_nemesis";
+import { nemesisDecompress, nemesisCompress } from "../src/md_nemesis";
 
 /**
  * Vettori costruiti a mano secondo l'algoritmo trascritto (niente round-trip:
@@ -74,5 +74,43 @@ describe("nemesisDecompress", () => {
     const out = nemesisDecompress(stream);
     expect(out.length).toBe(128);
     expect(out.every((b) => b === 0x55)).toBe(true);
+  });
+});
+
+describe("nemesisCompress (encoder a lunghezza fissa, round-trip)", () => {
+  test("round-trip su dati random (padding a 32 byte incluso)", () => {
+    let s = 0x1234abcd;
+    const data = new Uint8Array(257); // non multiplo di 32: padding attivo
+    for (let i = 0; i < data.length; i++) { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; data[i] = s & 0xff; }
+    const comp = nemesisCompress(data);
+    const back = nemesisDecompress(comp);
+    // l'output è multiplo di 32: confronto con l'input paddato
+    const pad = (32 - (data.length % 32)) % 32;
+    const padded = new Uint8Array(data.length + pad);
+    padded.set(data);
+    expect(back.length).toBe(padded.length);
+    expect(Buffer.from(back).equals(Buffer.from(padded))).toBe(true);
+  });
+
+  test("round-trip su art realistica (tile con run lunghi)", () => {
+    const data = new Uint8Array(320);
+    for (let i = 0; i < 320; i += 32) {
+      data.fill(0xff, i, i + 8);   // run di nibble F
+      data.fill(0x00, i + 8, i + 16);
+      data.fill(0xab, i + 16, i + 32);
+    }
+    const back = nemesisDecompress(nemesisCompress(data));
+    expect(Buffer.from(back).equals(Buffer.from(data))).toBe(true);
+  });
+
+  test("compressione REALE su art con run lunghi (molto più piccola)", () => {
+    const data = new Uint8Array(320);
+    for (let i = 0; i < 320; i += 32) { data.fill(0xff, i, i + 16); data.fill(0x00, i + 16, i + 32); }
+    expect(nemesisCompress(data).length).toBeLessThan(80);
+  });
+
+  test("input vuoto (0 tile: errore onesto) e da 1 byte (padding a 32)", () => {
+    expect(() => nemesisCompress(new Uint8Array(0))).toThrow(/Nessun run/);
+    expect(nemesisDecompress(nemesisCompress(new Uint8Array(1))).length).toBe(32);
   });
 });

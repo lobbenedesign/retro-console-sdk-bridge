@@ -152,3 +152,94 @@ export function nemesisDecompress(data: Uint8Array): Uint8Array {
   }
   return result;
 }
+
+/**
+ * 📤 Encoder Nemesis (greedy, NON size-ottimale ma VALIDO per il
+ * decompressore sopra e per quello dei giochi).
+ *
+ * Strategia dichiarata: tabella codici a LUNGHEZZA FISSA prefisso-libera
+ * (tutti i codici di n bit, quindi prefisso-libera per costruzione),
+ * assegnati ai run di nibble distinti. Ogni run <= 8 nibble (limite del
+ * campo count a 3 bit dell'header). Padding a multipli di 32 byte come
+ * l'encoder di riferimento. L'ottimizzazione vera (Huffman a lunghezze
+ * variabili + modalità alternating, come mdcomp) NON è fatta: dichiarato.
+ *
+ * Vincolo rispettato: nessun codice ha i primi 6 bit a 1 (il pattern
+ * 111111 a len 6 è il trigger dell'RLE inline nel decoder).
+ */
+class BitWriter {
+  private bytes: number[] = [];
+  private cur = 0;
+  private n = 0;
+  writeBit(b: number): void {
+    this.cur |= (b & 1) << this.n; // LSB-prima, come il reader
+    this.n++;
+    if (this.n === 8) { this.bytes.push(this.cur); this.cur = 0; this.n = 0; }
+  }
+  writeCode(code: number, len: number): void {
+    // il decoder accumula MSB-prima: bit più significativo scritto per primo
+    for (let i = len - 1; i >= 0; i--) this.writeBit((code >> i) & 1);
+  }
+  finish(): Uint8Array {
+    if (this.n > 0) this.bytes.push(this.cur);
+    return new Uint8Array(this.bytes);
+  }
+}
+
+/** Un codice a n bit è utilizzabile se i suoi primi 6 bit non sono tutti 1. */
+function usableCode(code: number, len: number): boolean {
+  if (len < 6) return true;
+  return (code >>> (len - 6)) !== 0x3f;
+}
+
+export function nemesisCompress(input: Uint8Array): Uint8Array {
+  // 1. padding a multipli di 32 byte (come l'encoder di riferimento)
+  const pad = (32 - (input.length % 32)) % 32;
+  const padded = new Uint8Array(input.length + pad);
+  padded.set(input);
+
+  // 2. run di nibble (max 8: campo count a 3 bit)
+  const nibbles: number[] = [];
+  for (const b of padded) nibbles.push(b >> 4, b & 0xf);
+  const runs: Array<{ nibble: number; count: number }> = [];
+  let i = 0;
+  while (i < nibbles.length) {
+    let count = 1;
+    while (count < 8 && i + count < nibbles.length && nibbles[i + count] === nibbles[i]) count++;
+    runs.push({ nibble: nibbles[i], count });
+    i += count;
+  }
+  if (runs.length === 0) throw new Error("Nessun run da codificare.");
+
+  // 3. run distinti e lunghezza codice fissa n con abbastanza codici utilizzabili
+  const distinctRuns = [...new Map(runs.map((r) => [r.nibble + ":" + r.count, r])).values()]
+    .sort((a, b) => a.nibble - b.nibble || a.count - b.count);
+  const k = distinctRuns.length;
+  let n = 1;
+  while (n <= 15) {
+    const usable = Array.from({ length: 1 << n }, (_, c) => c).filter((c) => usableCode(c, n)).length;
+    if (usable >= k) break;
+    n++;
+  }
+  if (n > 15) throw new Error("Troppi run distinti: oltre la capacità della tabella Nemesis.");
+  const codes = Array.from({ length: 1 << n }, (_, c) => c).filter((c) => usableCode(c, n)).slice(0, k);
+  const codeOf = new Map<string, number>();
+  distinctRuns.forEach((r, idx) => codeOf.set(r.nibble + ":" + r.count, codes[idx]));
+
+  // 4. header: u16 BE rtiles (no alt) + voci ordinate per nibble + 0xFF
+  const rtiles = padded.length / 32;
+  const header: number[] = [(rtiles >> 8) & 0x7f, rtiles & 0xff];
+  let lastNibble = -1;
+  for (const r of distinctRuns) {
+    if (r.nibble !== lastNibble) { header.push(0x80 | r.nibble); lastNibble = r.nibble; }
+    header.push(((r.count - 1) << 4) | n);
+    header.push(codeOf.get(r.nibble + ":" + r.count)!);
+  }
+  header.push(0xff);
+
+  // 5. stream
+  const w = new BitWriter();
+  for (const r of runs) w.writeCode(codeOf.get(r.nibble + ":" + r.count)!, n);
+
+  return new Uint8Array([...header, ...w.finish()]);
+}

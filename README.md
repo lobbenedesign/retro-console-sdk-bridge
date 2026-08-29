@@ -493,6 +493,14 @@ pannelli indipendenti che richiedevano ciascuno il proprio upload; ora:
 - `POST /api/n64/yay0/decompress` — `{ dataBase64 }` → decompressione Yay0 reale.
 - `POST /api/n64/yay0/compress` — `{ dataBase64 }` → ricompressione Yay0 reale
   (greedy LZ77, round-trip verificato bit-per-bit col decompressore).
+- `POST /api/md/nemesis/compress` — encoder Nemesis reale a tabella codici
+  a lunghezza fissa prefisso-libera (valido per il decompressore dei giochi,
+  NON size-ottimale: dichiarato; padding a 32 byte come il reference).
+- `POST /api/n64/texture/encode` — `{ rgbaBase64, width, height, format }` →
+  re-encode PNG→formato RDP: RGBA16/32, IA16/8/4, I8/4, CI4/CI8 con palette
+  dai colori esatti (oltre 16/256 colori → errore esplicito, nessuna
+  quantizzazione silenziosa). In UI: upload PNG → canvas → texture N64.
+-
 - `POST /api/n64/crc/compute` — `{ romBase64, cic? }` → verifica reale dei
   checksum CRC dell'header (CIC rilevato dall'IPL3 o forzato).
 - `POST /api/n64/crc/fix` — `{ fullName, token, romBase64, cic? }` →

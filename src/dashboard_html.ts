@@ -245,6 +245,7 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
       <button class="btn dark" onclick="compUI('yay0')">Comprimi Yay0</button>
       <button class="btn purple" onclick="kosUI('decompress')">Kosinski (MD): decomprimi</button>
       <button class="btn dark" onclick="nemUI()">Nemesis (MD): decomprimi</button>
+      <button class="btn dark" onclick="nemUI(true)">Nemesis (MD): comprimi</button>
       <button class="btn purple" onclick="kosUI('compress')">Kosinski (MD): comprimi</button>
     </div>
     <div class="log" id="comp-log" style="margin-top:10px">—</div>
@@ -279,6 +280,14 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     </div>
     <div class="log" id="tex-log" style="margin-top:10px">—</div><br>
     <canvas id="tex-canvas" width="32" height="32" style="max-width:320px"></canvas>
+    <h2 style="font-size:12px; text-transform:uppercase; color:var(--mut); margin:16px 0 8px">📤 Re-encode PNG → formato N64 (round-trip texture)</h2>
+    <div class="row">
+      <div class="field">File PNG da convertire<input type="file" id="tex-png" accept=".png,image/png" /></div>
+      <button class="btn purple" onclick="texEncodeUI()">Converti nel formato selezionato</button>
+    </div>
+    <p class="muted" style="margin:8px 0 0">Il PNG viene decodificato nel browser (canvas), i pixel RGBA viaggiano al server e vengono encodati nel formato N64 scelto sopra. Per CI4/CI8 servono max 16/256 colori RGBA16 (nessuna quantizzazione silenziosa: errore esplicito).</p>
+    <div class="log" id="tex-enc-log" style="margin-top:8px">—</div>
+    <div id="tex-enc-dl"></div>
   </div>
 
   <div class="card">
@@ -823,16 +832,24 @@ async function decompBlock(i) {
   } catch (e) { log("scan-log", "Errore: " + e.message, "var(--err)"); }
 }
 
-async function nemUI() {
+async function nemUI(compress) {
   const f = $("comp-file").files[0];
-  const src = f ? await fileToBytes(f) : state.blob;
-  if (!src) { log("comp-log", "Seleziona un file Nemesis (o crea un blob).", "var(--err)"); return; }
-  log("comp-log", "⚡ Nemesis decompressione reale (art/tile Mega Drive)...", "var(--warn)");
-  const d = await api("/api/md/nemesis/decompress", { dataBase64: toB64(src) });
+  const src = compress ? (state.blob || (f ? await fileToBytes(f) : null)) : (f ? await fileToBytes(f) : state.blob);
+  if (!src) { log("comp-log", "Seleziona un file (o crea un blob).", "var(--err)"); return; }
+  const ep = compress ? "compress" : "decompress";
+  log("comp-log", "⚡ Nemesis " + ep + " reale (art/tile Mega Drive)...", "var(--warn)");
+  const d = await api("/api/md/nemesis/" + ep, { dataBase64: toB64(src) });
   if (d.error) { log("comp-log", "✗ " + d.error, "var(--err)"); return; }
-  const bytes = fromB64(d.decompressedBase64);
-  setBlob(bytes, "nemesis-decomp");
-  log("comp-log", "✓ Decompresso: " + d.decompressedSize + " byte (" + (d.decompressedSize / 32) + " tile da 32 B) → blob corrente.", "var(--ok)");
+  if (compress) {
+    const bytes = fromB64(d.compressedBase64);
+    log("comp-log", "✓ Compresso: " + src.length + " → " + d.compressedSize + " byte (encoder a lunghezza fissa: valido, non size-ottimale).", "var(--ok)");
+    $("comp-dl").innerHTML = "";
+    download(bytes, "art.nem", "Scarica blocco Nemesis (" + kb(d.compressedSize) + ")", "comp-dl");
+    setFlow("fs-export", true);
+  } else {
+    setBlob(fromB64(d.decompressedBase64), "nemesis-decomp");
+    log("comp-log", "✓ Decompresso: " + d.decompressedSize + " byte (" + (d.decompressedSize / 32) + " tile da 32 B) → blob corrente.", "var(--ok)");
+  }
 }
 
 async function kosUI(mode) {
@@ -911,6 +928,35 @@ async function decodeTexUI() {
   const ctx = cv.getContext("2d");
   ctx.putImageData(new ImageData(new Uint8ClampedArray(fromB64(d.rgbaBase64)), d.width, d.height), 0, 0);
   log("tex-log", "✓ Texture decodificata (" + fmt + ", " + d.width + "x" + d.height + ").", "var(--ok)");
+}
+
+async function texEncodeUI() {
+  const log = $("tex-enc-log"), dl = $("tex-enc-dl");
+  dl.innerHTML = "";
+  const f = $("tex-png").files[0];
+  if (!f) { log.textContent = "Seleziona un file PNG."; log.style.color = "var(--err)"; return; }
+  const fmt = $("tex-format").value;
+  if (fmt === "GIM (PSP)") { log.textContent = "Il re-encode GIM non è supportato: scegli un formato N64."; log.style.color = "var(--err)"; return; }
+  log.textContent = "⚡ Decodifica PNG nel browser + encode " + fmt + " reale…"; log.style.color = "var(--warn)";
+  try {
+    const bmp = await createImageBitmap(f);
+    const cv = document.createElement("canvas");
+    cv.width = bmp.width; cv.height = bmp.height;
+    const ctx = cv.getContext("2d");
+    ctx.drawImage(bmp, 0, 0);
+    const imgData = ctx.getImageData(0, 0, cv.width, cv.height);
+    const d = await api("/api/n64/texture/encode", {
+      rgbaBase64: toB64(new Uint8Array(imgData.data)),
+      width: cv.width, height: cv.height, format: fmt,
+    });
+    if (d.error) { log.textContent = "✗ " + d.error; log.style.color = "var(--err)"; return; }
+    log.style.color = "var(--ok)";
+    log.textContent = "✓ Encodato " + cv.width + "x" + cv.height + " in " + fmt + ": " + d.dataSize + " byte" +
+      (d.paletteSize ? " + palette " + d.paletteSize + " byte" : "") + ".";
+    download(fromB64(d.dataBase64), "texture_" + fmt.toLowerCase() + ".bin", "Scarica texture " + fmt + " (" + d.dataSize + " B)", "tex-enc-dl");
+    if (d.paletteBase64) download(fromB64(d.paletteBase64), "palette_rgba16.bin", "Scarica palette RGBA16 (" + d.paletteSize + " B)", "tex-enc-dl");
+    setFlow("fs-export", true);
+  } catch (e) { log.textContent = "Errore: " + e.message; log.style.color = "var(--err)"; }
 }
 
 async function decodeGimUI() {

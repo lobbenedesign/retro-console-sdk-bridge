@@ -29,7 +29,8 @@ import { listIsoFiles, extractIsoFile } from "./src/psp_iso";
 import { decodeGim } from "./src/psp_gim";
 import { parseGbaRomHeader, fixGbaComplement } from "./src/gba_rom_header";
 import { kosinskiDecompress, kosinskiCompress } from "./src/md_kosinski";
-import { nemesisDecompress } from "./src/md_nemesis";
+import { nemesisDecompress, nemesisCompress } from "./src/md_nemesis";
+import { encodeN64Texture } from "./src/n64_texture_encode";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
 import { parseN64RomHeader, writeN64RomHeader } from "./src/n64_rom_header";
 import { decodeN64Texture, requiredByteLength, BITS_PER_PIXEL, type N64TextureFormat } from "./src/n64_texture";
@@ -224,6 +225,39 @@ const server = Bun.serve({
         if (data.length === 0) return new Response(JSON.stringify({ error: "dataBase64 vuoto." }), { status: 400, headers });
         const out = kosinskiCompress(data);
         return new Response(JSON.stringify({ compressedBase64: Buffer.from(out).toString("base64"), compressedSize: out.length }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    if (url.pathname === "/api/md/nemesis/compress" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const data = new Uint8Array(Buffer.from(body.dataBase64 || "", "base64"));
+        if (data.length === 0) return new Response(JSON.stringify({ error: "dataBase64 vuoto." }), { status: 400, headers });
+        const out = nemesisCompress(data);
+        return new Response(JSON.stringify({ compressedBase64: Buffer.from(out).toString("base64"), compressedSize: out.length }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 4m. N64 — encoder texture RGBA→formati RDP (inverse del decoder,
+    // con palette CI4/CI8 dai colori esatti: oltre il limite → errore onesto).
+    if (url.pathname === "/api/n64/texture/encode" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const width = Number(body.width), height = Number(body.height);
+        const format = body.format as N64TextureFormat;
+        if (!width || !height) return new Response(JSON.stringify({ error: "width e height richieste." }), { status: 400, headers });
+        if (!BITS_PER_PIXEL[format]) return new Response(JSON.stringify({ error: `Formato non riconosciuto: ${format}` }), { status: 400, headers });
+        const rgba = new Uint8Array(Buffer.from(body.rgbaBase64 || "", "base64"));
+        const enc = encodeN64Texture(rgba, width, height, format);
+        return new Response(JSON.stringify({
+          dataBase64: Buffer.from(enc.data).toString("base64"),
+          dataSize: enc.data.length,
+          ...(enc.palette ? { paletteBase64: Buffer.from(enc.palette).toString("base64"), paletteSize: enc.palette.length } : {}),
+        }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
       }

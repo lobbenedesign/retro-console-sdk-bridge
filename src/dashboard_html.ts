@@ -335,7 +335,7 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
 
 <!-- ============ VISTA: PSP FILESYSTEM ============ -->
 <section class="view" data-view="psp">
-  <h1>PSP Filesystem (ISO / CSO)</h1>
+  <h1>Filesystem dischi: PSP (ISO/CSO) e Dreamcast (GDI)</h1>
   <p class="sub">Apri l'immagine di un gioco PSP (.iso o .cso): l'app legge il filesystem ISO9660 reale
   (il CSO viene decompresso settore per settore) ed estrae i singoli file — che diventano il <b>blob corrente</b>
   per texture, disassembler e patcher. Nota onesta: l'immagine viaggia in memoria, pratica fino a ~1GB.</p>
@@ -346,6 +346,18 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     </div>
     <div class="log" id="psp-log" style="margin-top:10px">—</div>
     <div id="psp-table" style="max-height:420px; overflow-y:auto; margin-top:10px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Dreamcast: immagine GDI (ZIP con .gdi + tracce)</h2>
+    <p class="muted" style="margin:0 0 10px">La traccia dati (track03.bin, settore 2048) è un ISO9660: elenco file ed estrazione reali.
+    CDI (DiscJuggler) NON supportato — converti in GDI con GDIBuilder. Nota: il solo track03.bin si apre anche col pannello PSP qui sopra.</p>
+    <div class="row">
+      <div class="field">ZIP con .gdi + tracce<input type="file" id="dc-file" accept=".zip" /></div>
+      <button class="btn pri" onclick="dcListUI()">Apri filesystem GDI</button>
+    </div>
+    <div class="log" id="dc-log" style="margin-top:10px">—</div>
+    <div id="dc-table" style="max-height:420px; overflow-y:auto; margin-top:10px"></div>
   </div>
 </section>
 
@@ -1120,6 +1132,46 @@ async function pspExtract(path) {
     log.style.color = "var(--ok)";
     log.textContent = "✓ " + path + " (" + d.size + " byte) → blob corrente. Usabile in Texture & 3D, Disassembler, Level Script.";
   } catch (e) { log.textContent = "Errore: " + e.message; log.style.color = "var(--err)"; }
+}
+
+// ================= VISTA DREAMCAST GDI =================
+let dcZip = null;
+$("dc-file").addEventListener("change", async e => { if (e.target.files[0]) dcZip = await fileToBytes(e.target.files[0]); });
+
+async function dcListUI() {
+  const log = $("dc-log"), table = $("dc-table");
+  table.innerHTML = "";
+  if (!dcZip) { log.textContent = "Seleziona uno ZIP con .gdi + tracce."; log.style.color = "var(--err)"; return; }
+  log.textContent = "⚡ Lettura GDI e traccia dati (ISO9660) reale…"; log.style.color = "var(--warn)";
+  try {
+    const d = await api("/api/dc/gdi/list", { zipBase64: toB64(dcZip) });
+    if (d.error) { log.textContent = "✗ " + d.error; log.style.color = "var(--err)"; return; }
+    log.style.color = d.isLikelyDreamcast ? "var(--ok)" : "var(--warn)";
+    log.textContent = "✓ " + d.gdiName + ": " + d.trackCount + " tracce · traccia dati " +
+      (d.isLikelyDreamcast ? "con IP.BIN SEGA SEGAKATANA (disco DC confermato)" : "ISO9660 valido (IP.BIN non riconosciuto)") +
+      "\\nVolume: " + (d.volumeId || "(senza nome)") + " · " + d.entryCount + " voci" +
+      (d.truncated ? " (elenco troncato a 500)" : "");
+    let html = '<table class="tbl"><tr><th>Tracce</th><th>Settori</th><th>Tipo</th></tr>';
+    d.tracks.forEach(t => { html += '<tr><td>' + t.number + '</td><td>' + t.sectorSize + '</td><td>' + (t.isData ? '<strong>dati</strong>' : 'audio') + '</td></tr>'; });
+    html += '</table><table class="tbl" style="margin-top:8px"><tr><th>Percorso</th><th>Dimensione</th><th></th></tr>';
+    d.entries.forEach(e => {
+      if (!e.isDir) html += '<tr><td>' + e.path + '</td><td>' + kb(e.size) +
+        '</td><td><button class="btn pri mini" onclick="dcExtract(' + "'" + e.path.replace(/'/g, "\\'") + "'" + ')">Estrai → blob</button></td></tr>';
+      else html += '<tr><td><strong>' + e.path + '/</strong></td><td class="muted">dir</td><td></td></tr>';
+    });
+    table.innerHTML = html + "</table>";
+  } catch (e) { log.textContent = "Errore: " + e.message; log.style.color = "var(--err)"; }
+}
+
+async function dcExtract(path) {
+  const log = $("dc-log");
+  log.textContent = "⚡ Estrazione reale di " + path + "…"; log.style.color = "var(--warn)";
+  const d = await api("/api/dc/gdi/extract", { zipBase64: toB64(dcZip), path });
+  if (d.error) { log.textContent = "✗ " + d.error; log.style.color = "var(--err)"; return; }
+  setBlob(fromB64(d.fileBase64), path.split("/").pop());
+  setFlow("fs-edit", true);
+  log.style.color = "var(--ok)";
+  log.textContent = "✓ " + path + " (" + d.size + " byte) → blob corrente.";
 }
 
 // ================= VISTA DISASSEMBLER =================

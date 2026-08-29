@@ -31,6 +31,7 @@ import { parseGbaRomHeader, fixGbaComplement } from "./src/gba_rom_header";
 import { kosinskiDecompress, kosinskiCompress } from "./src/md_kosinski";
 import { nemesisDecompress, nemesisCompress } from "./src/md_nemesis";
 import { encodeN64Texture } from "./src/n64_texture_encode";
+import { listGdiFiles, extractGdiFile } from "./src/dc_gdi";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
 import { parseN64RomHeader, writeN64RomHeader } from "./src/n64_rom_header";
 import { decodeN64Texture, requiredByteLength, BITS_PER_PIXEL, type N64TextureFormat } from "./src/n64_texture";
@@ -237,6 +238,39 @@ const server = Bun.serve({
         if (data.length === 0) return new Response(JSON.stringify({ error: "dataBase64 vuoto." }), { status: 400, headers });
         const out = nemesisCompress(data);
         return new Response(JSON.stringify({ compressedBase64: Buffer.from(out).toString("base64"), compressedSize: out.length }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 4n. Dreamcast — filesystem di un'immagine GDI (ZIP con .gdi + tracce):
+    // traccia dati ISO9660 2048 via parser esistente. CDI non supportato.
+    if (url.pathname === "/api/dc/gdi/list" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const zip = new Uint8Array(Buffer.from(body.zipBase64 || "", "base64"));
+        if (zip.length < 32) return new Response(JSON.stringify({ error: "ZIP troppo corto." }), { status: 400, headers });
+        const l = listGdiFiles(zip);
+        return new Response(JSON.stringify({
+          gdiName: l.gdiName,
+          trackCount: l.trackCount,
+          tracks: l.tracks.map((t) => ({ number: t.number, file: t.file, sectorSize: t.sectorSize, isData: t.isData })),
+          isLikelyDreamcast: l.isLikelyDreamcast,
+          volumeId: l.volumeId,
+          entries: l.entries.slice(0, 500).map((e) => ({ path: e.path, isDir: e.isDir, size: e.size })),
+          entryCount: l.entries.length,
+          truncated: l.entries.length > 500,
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+    if (url.pathname === "/api/dc/gdi/extract" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const zip = new Uint8Array(Buffer.from(body.zipBase64 || "", "base64"));
+        const file = extractGdiFile(zip, body.path || "");
+        return new Response(JSON.stringify({ path: body.path, size: file.length, fileBase64: Buffer.from(file).toString("base64") }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
       }

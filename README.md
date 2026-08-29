@@ -501,6 +501,13 @@ pannelli indipendenti che richiedevano ciascuno il proprio upload; ora:
   dai colori esatti (oltre 16/256 colori → errore esplicito, nessuna
   quantizzazione silenziosa). In UI: upload PNG → canvas → texture N64.
 -
+- `POST /api/dc/gdi/list` — `{ zipBase64 }` → immagine Dreamcast **GDI** (ZIP
+  con .gdi + tracce): elenco tracce + filesystem ISO9660 della traccia dati
+  (2048/settore, riusa il parser già verificato) + riconoscimento IP.BIN
+  SEGA SEGAKATANA. CDI (DiscJuggler) NON supportato — dichiarato.
+- `POST /api/dc/gdi/extract` — `{ zipBase64, path }` → estrazione reale di
+  un file dalla traccia dati.
+-
 - `POST /api/n64/crc/compute` — `{ romBase64, cic? }` → verifica reale dei
   checksum CRC dell'header (CIC rilevato dall'IPL3 o forzato).
 - `POST /api/n64/crc/fix` — `{ fullName, token, romBase64, cic? }` →

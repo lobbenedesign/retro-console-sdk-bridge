@@ -108,6 +108,12 @@ export function identifyConsole(rom: Uint8Array): ConsoleMatch {
     return { console: "Sony PlayStation Portable", format: "modulo cifrato (~PSP)", confidence: "magic", detail: "Firma ~PSP: EBOOT.BIN/module PSP CIFRATO. Questo studio non lo decifra (servono tool dedicati della scena su un firmware con chiavi); i file DATA.PSP/etc dentro l'ISO spesso sono cifrati così." };
   }
 
+  // Dreamcast: IP.BIN boot header "SEGA SEGAKATANA" a offset 0 della
+  // traccia dati (formato documentato su dreamcast.wiki)
+  if (startsWith(rom, 0, [..."SEGA SEGAKATANA"].map((c) => c.charCodeAt(0)))) {
+    return { console: "Sega Dreamcast", format: "IP.BIN / traccia dati GDI", confidence: "magic", detail: "Boot header SEGA SEGAKATANA: settore di avvio (IP.BIN) di un disco Dreamcast." };
+  }
+
   // PSP: PBP header reale ("\\0PBP" a offset 0 — formato documentato
   // pubblicamente, usato da EBOOT.PBP e PBP tools della community pspdev)
   if (startsWith(rom, 0, [0x00, 0x50, 0x42, 0x50])) {

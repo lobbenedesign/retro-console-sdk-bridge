@@ -243,3 +243,111 @@ export function nemesisCompress(input: Uint8Array): Uint8Array {
 
   return new Uint8Array([...header, ...w.finish()]);
 }
+
+/**
+ * 📤 Encoder Nemesis OTTIMIZZATO (Huffman) — codici a lunghezza variabile.
+ *
+ * Migliora l'encoder a lunghezza fissa: lunghezze di codice derivate dalle
+ * frequenze dei run (Huffman standard), assegnazione canonica col VINCOLO
+ * REALE del formato: nessun codice di lunghezza >= 6 può avere i primi 6
+ * bit tutti a 1 (il decoder interpreta quel prefisso come RLE inline a
+ * len 6, PRIMA di cercare nella tabella). Il sottalbero 111111* viene
+ * saltato durante l'assegnazione; overflow o profondità > 15 → ripiego
+ * onesto all'encoder a lunghezza fissa (sempre valido).
+ */
+function huffmanNemesisCodes(
+  freq: Map<string, number>,
+): Map<string, { code: number; len: number }> | null {
+  // 1. Huffman classico (simboli <= 128: O(n^2) è più che sufficiente)
+  interface Node { w: number; sym?: string; l?: Node; r?: Node }
+  let nodes: Node[] = [...freq].map(([sym, w]) => ({ w, sym }));
+  if (nodes.length === 0) return null;
+  while (nodes.length > 1) {
+    nodes.sort((a, b) => a.w - b.w);
+    const a = nodes.shift()!, b = nodes.shift()!;
+    nodes.push({ w: a.w + b.w, l: a, r: b });
+  }
+  const depths = new Map<string, number>();
+  const walk = (n: Node, d: number) => {
+    if (n.sym !== undefined) { depths.set(n.sym, Math.max(1, d)); return; }
+    walk(n.l!, d + 1); walk(n.r!, d + 1);
+  };
+  walk(nodes[0], 0);
+  for (const d of depths.values()) if (d > 15) return null; // campo len a 4 bit
+
+  // 2. assegnazione canonica col salto del sottalbero 111111*
+  const byLen = new Map<number, string[]>();
+  for (const [sym, d] of depths) {
+    if (!byLen.has(d)) byLen.set(d, []);
+    byLen.get(d)!.push(sym);
+  }
+  const lens = [...byLen.keys()].sort((a, b) => a - b);
+  const out = new Map<string, { code: number; len: number }>();
+  let code = 0;
+  let prevLen = 0;
+  for (const len of lens) {
+    code <<= len - prevLen;
+    prevLen = len;
+    const syms = byLen.get(len)!;
+    for (const sym of syms) {
+      // salto del sottalbero proibito (solo per len >= 6)
+      if (len >= 6 && (code >>> (len - 6)) === 0x3f) code += 1 << (len - 6);
+      if (code >= 1 << len) return null; // overflow: ripiego
+      out.set(sym, { code, len });
+      code++;
+    }
+  }
+  return out;
+}
+
+export function nemesisCompressOptimal(input: Uint8Array): Uint8Array {
+  const pad = (32 - (input.length % 32)) % 32;
+  const padded = new Uint8Array(input.length + pad);
+  padded.set(input);
+
+  const nibbles: number[] = [];
+  for (const b of padded) nibbles.push(b >> 4, b & 0xf);
+  const runs: Array<{ nibble: number; count: number }> = [];
+  let i = 0;
+  while (i < nibbles.length) {
+    let count = 1;
+    while (count < 8 && i + count < nibbles.length && nibbles[i + count] === nibbles[i]) count++;
+    runs.push({ nibble: nibbles[i], count });
+    i += count;
+  }
+  if (runs.length === 0) throw new Error("Nessun run da codificare.");
+
+  const freq = new Map<string, number>();
+  const runOf = new Map<string, { nibble: number; count: number }>();
+  for (const r of runs) {
+    const k = r.nibble + ":" + r.count;
+    freq.set(k, (freq.get(k) || 0) + 1);
+    runOf.set(k, r);
+  }
+
+  const codes = huffmanNemesisCodes(freq);
+  if (codes === null) return nemesisCompress(input); // ripiego onesto
+
+  // stima: se non batte la lunghezza fissa, usa quella
+  const fixedN = Math.max(1, Math.ceil(Math.log2(Math.max(2, freq.size))));
+  let huffBits = 0;
+  for (const [sym, n] of freq) huffBits += n * codes.get(sym)!.len;
+  if (huffBits >= runs.length * fixedN) return nemesisCompress(input);
+
+  // header: voci ordinate per nibble, len variabile per voce
+  const rtiles = padded.length / 32;
+  const header: number[] = [(rtiles >> 8) & 0x7f, rtiles & 0xff];
+  const distinct = [...runOf.values()].sort((a, b) => a.nibble - b.nibble || a.count - b.count);
+  let lastNibble = -1;
+  for (const r of distinct) {
+    const k = r.nibble + ":" + r.count;
+    if (r.nibble !== lastNibble) { header.push(0x80 | r.nibble); lastNibble = r.nibble; }
+    header.push(((r.count - 1) << 4) | codes.get(k)!.len);
+    header.push(codes.get(k)!.code);
+  }
+  header.push(0xff);
+
+  const w = new BitWriter();
+  for (const r of runs) w.writeCode(codes.get(r.nibble + ":" + r.count)!.code, codes.get(r.nibble + ":" + r.count)!.len);
+  return new Uint8Array([...header, ...w.finish()]);
+}

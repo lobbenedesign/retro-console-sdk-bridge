@@ -283,6 +283,7 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     <h2 style="font-size:12px; text-transform:uppercase; color:var(--mut); margin:16px 0 8px">📤 Re-encode PNG → formato N64 (round-trip texture)</h2>
     <div class="row">
       <div class="field">File PNG da convertire<input type="file" id="tex-png" accept=".png,image/png" /></div>
+      <label class="muted"><input type="checkbox" id="tex-quant" /> quantizza con median-cut se troppi colori (CI4/CI8, con perdita dichiarata)</label>
       <button class="btn purple" onclick="texEncodeUI()">Converti nel formato selezionato</button>
     </div>
     <p class="muted" style="margin:8px 0 0">Il PNG viene decodificato nel browser (canvas), i pixel RGBA viaggiano al server e vengono encodati nel formato N64 scelto sopra. Per CI4/CI8 servono max 16/256 colori RGBA16 (nessuna quantizzazione silenziosa: errore esplicito).</p>
@@ -977,6 +978,7 @@ async function texEncodeUI() {
     const d = await api("/api/n64/texture/encode", {
       rgbaBase64: toB64(new Uint8Array(imgData.data)),
       width: cv.width, height: cv.height, format: fmt,
+      quantize: $("tex-quant").checked,
     });
     if (d.error) { log.textContent = "✗ " + d.error; log.style.color = "var(--err)"; return; }
     log.style.color = "var(--ok)";

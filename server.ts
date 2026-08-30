@@ -29,7 +29,7 @@ import { listIsoFiles, extractIsoFile } from "./src/psp_iso";
 import { decodeGim } from "./src/psp_gim";
 import { parseGbaRomHeader, fixGbaComplement } from "./src/gba_rom_header";
 import { kosinskiDecompress, kosinskiCompress } from "./src/md_kosinski";
-import { nemesisDecompress, nemesisCompress } from "./src/md_nemesis";
+import { nemesisDecompress, nemesisCompressOptimal } from "./src/md_nemesis";
 import { encodeN64Texture } from "./src/n64_texture_encode";
 import { listGdiFiles, extractGdiFile } from "./src/dc_gdi";
 import { rebuildPspImage, rebuildDcGdi } from "./src/image_rebuild";
@@ -237,7 +237,7 @@ const server = Bun.serve({
         const body: any = await req.json();
         const data = new Uint8Array(Buffer.from(body.dataBase64 || "", "base64"));
         if (data.length === 0) return new Response(JSON.stringify({ error: "dataBase64 vuoto." }), { status: 400, headers });
-        const out = nemesisCompress(data);
+        const out = nemesisCompressOptimal(data); // Huffman con fallback a lunghezza fissa
         return new Response(JSON.stringify({ compressedBase64: Buffer.from(out).toString("base64"), compressedSize: out.length }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
@@ -341,7 +341,7 @@ const server = Bun.serve({
         if (!width || !height) return new Response(JSON.stringify({ error: "width e height richieste." }), { status: 400, headers });
         if (!BITS_PER_PIXEL[format]) return new Response(JSON.stringify({ error: `Formato non riconosciuto: ${format}` }), { status: 400, headers });
         const rgba = new Uint8Array(Buffer.from(body.rgbaBase64 || "", "base64"));
-        const enc = encodeN64Texture(rgba, width, height, format);
+        const enc = encodeN64Texture(rgba, width, height, format, { quantize: !!body.quantize });
         return new Response(JSON.stringify({
           dataBase64: Buffer.from(enc.data).toString("base64"),
           dataSize: enc.data.length,

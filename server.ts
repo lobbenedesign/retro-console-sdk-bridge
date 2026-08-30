@@ -33,6 +33,7 @@ import { nemesisDecompress, nemesisCompressOptimal } from "./src/md_nemesis";
 import { encodeN64Texture } from "./src/n64_texture_encode";
 import { listGdiFiles, extractGdiFile } from "./src/dc_gdi";
 import { rebuildPspImage, rebuildDcGdi } from "./src/image_rebuild";
+import { encodeGim, type GimFormat } from "./src/psp_gim_encode";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
 import { parseN64RomHeader, writeN64RomHeader } from "./src/n64_rom_header";
 import { decodeN64Texture, requiredByteLength, BITS_PER_PIXEL, type N64TextureFormat } from "./src/n64_texture";
@@ -239,6 +240,26 @@ const server = Bun.serve({
         if (data.length === 0) return new Response(JSON.stringify({ error: "dataBase64 vuoto." }), { status: 400, headers });
         const out = nemesisCompressOptimal(data); // Huffman con fallback a lunghezza fissa
         return new Response(JSON.stringify({ compressedBase64: Buffer.from(out).toString("base64"), compressedSize: out.length }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 4q. PSP — encoder texture GIM (inverse del decoder; P4/P8 con palette
+    // esatta: oltre 16/256 colori → errore onesto).
+    if (url.pathname === "/api/psp/gim/encode" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const width = Number(body.width), height = Number(body.height);
+        const format = (body.format || "RGBA8888") as GimFormat;
+        if (!width || !height) return new Response(JSON.stringify({ error: "width e height richieste." }), { status: 400, headers });
+        const rgba = new Uint8Array(Buffer.from(body.rgbaBase64 || "", "base64"));
+        const enc = encodeGim(rgba, width, height, format);
+        return new Response(JSON.stringify({
+          gimBase64: Buffer.from(enc.gim).toString("base64"),
+          gimSize: enc.gim.length,
+          format: enc.format,
+        }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
       }

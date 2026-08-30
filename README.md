@@ -552,6 +552,11 @@ pannelli indipendenti che richiedevano ciascuno il proprio upload; ora:
   GB/GBC, GBA, NDS, Mega Drive, GameCube, Wii. Le voci non-ROM dentro lo
   ZIP (readme ecc.) vengono marcate "ignorata", mai far fallire il resto.
 - `POST /api/psp/gim/decode` — `{ dataBase64 }` → decoder texture **GIM**
+- `POST /api/psp/gim/encode` — `{ rgbaBase64, width, height, format }` →
+  encoder GIM reale (RGBA5650/5551/4444/8888 + P4/P8 con palette RGBA8888
+  esatta: oltre 16/256 colori → errore onesto). Inverso del decoder, con
+  AUTOVERIFICA: il file viene ricompreso col decoder prima di essere emesso.
+-
   PSP reale (formati GE 5650/5551/4444/8888 + indicizzati P4/P8 con palette,
   de-swizzle tiled; DXT/pa8 → rifiuto onesto). Struttura trascritta da
   GeofrontTeam/LibPSPThemes gim.py (GPL: solo riferimento di formato).

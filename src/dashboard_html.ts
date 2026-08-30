@@ -283,6 +283,10 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     <h2 style="font-size:12px; text-transform:uppercase; color:var(--mut); margin:16px 0 8px">📤 Re-encode PNG → formato N64 (round-trip texture)</h2>
     <div class="row">
       <div class="field">File PNG da convertire<input type="file" id="tex-png" accept=".png,image/png" /></div>
+      <div class="field">Out GIM (se formato GIM)<select id="gim-out-format">
+        <option>RGBA8888</option><option>RGBA5650</option><option>RGBA5551</option>
+        <option>RGBA4444</option><option>P4</option><option>P8</option>
+      </select></div>
       <label class="muted"><input type="checkbox" id="tex-quant" /> quantizza con median-cut se troppi colori (CI4/CI8, con perdita dichiarata)</label>
       <button class="btn purple" onclick="texEncodeUI()">Converti nel formato selezionato</button>
     </div>
@@ -966,7 +970,7 @@ async function texEncodeUI() {
   const f = $("tex-png").files[0];
   if (!f) { log.textContent = "Seleziona un file PNG."; log.style.color = "var(--err)"; return; }
   const fmt = $("tex-format").value;
-  if (fmt === "GIM (PSP)") { log.textContent = "Il re-encode GIM non è supportato: scegli un formato N64."; log.style.color = "var(--err)"; return; }
+  if (fmt === "GIM (PSP)") { await gimEncodeUI(await createImageBitmap(f)); return; }
   log.textContent = "⚡ Decodifica PNG nel browser + encode " + fmt + " reale…"; log.style.color = "var(--warn)";
   try {
     const bmp = await createImageBitmap(f);
@@ -986,6 +990,28 @@ async function texEncodeUI() {
       (d.paletteSize ? " + palette " + d.paletteSize + " byte" : "") + ".";
     download(fromB64(d.dataBase64), "texture_" + fmt.toLowerCase() + ".bin", "Scarica texture " + fmt + " (" + d.dataSize + " B)", "tex-enc-dl");
     if (d.paletteBase64) download(fromB64(d.paletteBase64), "palette_rgba16.bin", "Scarica palette RGBA16 (" + d.paletteSize + " B)", "tex-enc-dl");
+    setFlow("fs-export", true);
+  } catch (e) { log.textContent = "Errore: " + e.message; log.style.color = "var(--err)"; }
+}
+
+async function gimEncodeUI(bmp) {
+  const log = $("tex-enc-log"), dl = $("tex-enc-dl");
+  log.textContent = "⚡ Encode GIM (PSP) reale…"; log.style.color = "var(--warn)";
+  try {
+    const cv = document.createElement("canvas");
+    cv.width = bmp.width; cv.height = bmp.height;
+    const ctx = cv.getContext("2d");
+    ctx.drawImage(bmp, 0, 0);
+    const imgData = ctx.getImageData(0, 0, cv.width, cv.height);
+    const outFmt = $("gim-out-format") ? $("gim-out-format").value : "RGBA8888";
+    const d = await api("/api/psp/gim/encode", {
+      rgbaBase64: toB64(new Uint8Array(imgData.data)),
+      width: cv.width, height: cv.height, format: outFmt,
+    });
+    if (d.error) { log.textContent = "✗ " + d.error; log.style.color = "var(--err)"; return; }
+    log.style.color = "var(--ok)";
+    log.textContent = "✓ GIM encodato " + cv.width + "x" + cv.height + " (" + d.format + "): " + d.gimSize + " byte.";
+    download(fromB64(d.gimBase64), "texture.gim", "Scarica texture GIM (" + d.gimSize + " B)", "tex-enc-dl");
     setFlow("fs-export", true);
   } catch (e) { log.textContent = "Errore: " + e.message; log.style.color = "var(--err)"; }
 }

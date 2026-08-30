@@ -32,6 +32,7 @@ import { kosinskiDecompress, kosinskiCompress } from "./src/md_kosinski";
 import { nemesisDecompress, nemesisCompress } from "./src/md_nemesis";
 import { encodeN64Texture } from "./src/n64_texture_encode";
 import { listGdiFiles, extractGdiFile } from "./src/dc_gdi";
+import { rebuildPspImage, rebuildDcGdi } from "./src/image_rebuild";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
 import { parseN64RomHeader, writeN64RomHeader } from "./src/n64_rom_header";
 import { decodeN64Texture, requiredByteLength, BITS_PER_PIXEL, type N64TextureFormat } from "./src/n64_texture";
@@ -238,6 +239,60 @@ const server = Bun.serve({
         if (data.length === 0) return new Response(JSON.stringify({ error: "dataBase64 vuoto." }), { status: 400, headers });
         const out = nemesisCompress(data);
         return new Response(JSON.stringify({ compressedBase64: Buffer.from(out).toString("base64"), compressedSize: out.length }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 4o. Rebuild immagine PSP (ISO, opzionale CSO): il client manda
+    // l'immagine originale + i file modificati; il server rilegge tutto in
+    // memoria, sostituisce e ricostruisce. Dietro gate di dichiarazione.
+    if (url.pathname === "/api/psp/iso/build" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        if (!verifyToken(body.token, body.fullName)) {
+          return new Response(JSON.stringify({ error: "Dichiarazione non valida o mancante (stesso gate del patcher)." }), { status: 403, headers });
+        }
+        const image = new Uint8Array(Buffer.from(body.imageBase64 || "", "base64"));
+        const replacements = (body.replacements || []).map((r: any) => ({
+          name: String(r.name || ""),
+          data: new Uint8Array(Buffer.from(r.fileBase64 || "", "base64")),
+        })).filter((r: any) => r.name && r.data.length > 0);
+        if (replacements.length === 0) return new Response(JSON.stringify({ error: "Nessun file di sostituzione fornito." }), { status: 400, headers });
+        const r = rebuildPspImage(image, replacements, !!body.alsoCso);
+        return new Response(JSON.stringify({
+          applied: r.applied,
+          unmatched: r.unmatched,
+          isoBase64: Buffer.from(r.iso).toString("base64"),
+          isoSize: r.iso.length,
+          ...(r.cso ? { csoBase64: Buffer.from(r.cso).toString("base64"), csoSize: r.cso.length } : {}),
+        }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 4p. Rebuild immagine Dreamcast GDI (traccia dati ricostruita,
+    // IP.BIN dei primi 16 settori preservato). Dietro gate.
+    if (url.pathname === "/api/dc/gdi/build" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        if (!verifyToken(body.token, body.fullName)) {
+          return new Response(JSON.stringify({ error: "Dichiarazione non valida o mancante (stesso gate del patcher)." }), { status: 403, headers });
+        }
+        const zip = new Uint8Array(Buffer.from(body.zipBase64 || "", "base64"));
+        const replacements = (body.replacements || []).map((r: any) => ({
+          name: String(r.name || ""),
+          data: new Uint8Array(Buffer.from(r.fileBase64 || "", "base64")),
+        })).filter((r: any) => r.name && r.data.length > 0);
+        if (replacements.length === 0) return new Response(JSON.stringify({ error: "Nessun file di sostituzione fornito." }), { status: 400, headers });
+        const r = rebuildDcGdi(zip, replacements);
+        return new Response(JSON.stringify({
+          applied: r.applied,
+          unmatched: r.unmatched,
+          zipBase64: Buffer.from(r.zip).toString("base64"),
+          zipSize: r.zip.length,
+        }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
       }

@@ -149,3 +149,50 @@ export class CsoReader implements SectorReader {
 export function openSectorReader(data: Uint8Array): SectorReader {
   return isCso(data) ? new CsoReader(data) : new IsoReader(data);
 }
+
+/**
+ * 📤 Compressore CSO (spec trascritta dal reader sopra, verificata contro
+ * ppsspp): frame 2048 byte, deflate raw per frame; se la compressione non
+ * riduce, il frame è memorizzato plain col bit 31 dell'index entry.
+ * Versione 1, align 0 — compatibile con ogni lettore CSO reale.
+ */
+import { deflateRawSync } from "node:zlib";
+
+export function csoCompress(iso: Uint8Array): Uint8Array {
+  if (iso.length === 0 || iso.length % 2048 !== 0) {
+    throw new Error(`Dimensione ISO non multipla di 2048 (${iso.length}): allineare prima della compressione CSO.`);
+  }
+  const frameSize = 2048;
+  const numFrames = iso.length / frameSize;
+  const headerSize = 24;
+  const bodyOffset = headerSize + (numFrames + 1) * 4;
+
+  // comprime i frame e costruisce l'indice
+  const frames: Uint8Array[] = [];
+  const index: number[] = [];
+  let cursor = bodyOffset;
+  for (let i = 0; i < numFrames; i++) {
+    const raw = iso.slice(i * frameSize, (i + 1) * frameSize);
+    const deflated = new Uint8Array(deflateRawSync(Buffer.from(raw)));
+    const usePlain = deflated.length >= frameSize;
+    const payload = usePlain ? raw : deflated;
+    index.push((cursor | (usePlain ? 0x80000000 : 0)) >>> 0);
+    frames.push(payload);
+    cursor += payload.length;
+  }
+  index.push(cursor >>> 0); // terminatore
+
+  const out = new Uint8Array(cursor);
+  const dv = new DataView(out.buffer);
+  out.set(new TextEncoder().encode("CISO"), 0);
+  dv.setUint32(4, headerSize, true);
+  dv.setUint32(8, iso.length, true);
+  dv.setUint32(12, 0, true); // total_bytes high
+  dv.setUint32(16, frameSize, true);
+  out[20] = 1; // ver
+  out[21] = 0; // align
+  index.forEach((e, i) => dv.setUint32(headerSize + i * 4, e, true));
+  let off = bodyOffset;
+  for (const f of frames) { out.set(f, off); off += f.length; }
+  return out;
+}

@@ -508,6 +508,14 @@ pannelli indipendenti che richiedevano ciascuno il proprio upload; ora:
 - `POST /api/dc/gdi/extract` — `{ zipBase64, path }` → estrazione reale di
   un file dalla traccia dati.
 -
+- `POST /api/psp/iso/build` — `{ fullName, token, imageBase64, replacements,
+  alsoCso? }` → **rebuild** dell'immagine PSP: il server rilegge tutto il
+  filesystem dall'originale (in memoria), sostituisce i file (abbinati per
+  nome; dimensioni diverse gestite riassegnando gli LBA) e ricostruisce
+  l'ISO col builder + opzionale CSO. Verificato end-to-end via HTTP.
+- `POST /api/dc/gdi/build` — rebuild dell'immagine GDI Dreamcast: traccia
+  dati ricostruita preservando l'IP.BIN dei primi 16 settori.
+-
 - `POST /api/n64/crc/compute` — `{ romBase64, cic? }` → verifica reale dei
   checksum CRC dell'header (CIC rilevato dall'IPL3 o forzato).
 - `POST /api/n64/crc/fix` — `{ fullName, token, romBase64, cic? }` →

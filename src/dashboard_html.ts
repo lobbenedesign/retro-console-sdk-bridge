@@ -359,6 +359,23 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     <div class="log" id="dc-log" style="margin-top:10px">—</div>
     <div id="dc-table" style="max-height:420px; overflow-y:auto; margin-top:10px"></div>
   </div>
+
+  <div class="card">
+    <h2>🔁 Rebuild immagine (PSP ISO/CSO · Dreamcast GDI)</h2>
+    <p class="muted" style="margin:0 0 10px">Chiude il cerchio del modding file-level: modifica i file estratti (scaricati come blob), ricaricali qui e ricostruisci
+    l'immagine. I file vengono abbinati per NOME al percorso originale; le dimensioni diverse sono gestite (LBAs ricalcolati). Il rebuild PSP riscrive l'ISO da zero
+    (struttura ISO9660 valida per il nostro parser e standard; non testato su giochi reali in sviluppo). Il rebuild DC preserva l'IP.BIN di boot.</p>
+    <div class="row">
+      <div class="field">Immagine base (.iso/.cso PSP o .zip GDI DC)<input type="file" id="rb-image" accept=".iso,.cso,.zip" /></div>
+      <div class="field">File modificati da reiniettare (multi-selezione)<input type="file" id="rb-files" multiple /></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn purple" onclick="rebuildUI(false)">Rebuild ISO</button>
+      <button class="btn pri" onclick="rebuildUI(true)">Rebuild ISO + CSO</button>
+    </div>
+    <div class="log" id="rb-log" style="margin-top:10px">—</div>
+    <div id="rb-dl"></div>
+  </div>
 </section>
 
 <!-- ============ VISTA: DISASSEMBLER ============ -->
@@ -1131,6 +1148,46 @@ async function pspExtract(path) {
     setFlow("fs-edit", true);
     log.style.color = "var(--ok)";
     log.textContent = "✓ " + path + " (" + d.size + " byte) → blob corrente. Usabile in Texture & 3D, Disassembler, Level Script.";
+  } catch (e) { log.textContent = "Errore: " + e.message; log.style.color = "var(--err)"; }
+}
+
+// ================= REBUILD IMMAGINE =================
+let rbImage = null, rbImageName = "";
+$("rb-image").addEventListener("change", async e => { if (e.target.files[0]) { rbImage = await fileToBytes(e.target.files[0]); rbImageName = e.target.files[0].name; } });
+
+async function rebuildUI(alsoCso) {
+  const log = $("rb-log"), dl = $("rb-dl");
+  dl.innerHTML = "";
+  if (!rbImage) { log.textContent = "Seleziona l'immagine base."; log.style.color = "var(--err)"; return; }
+  const files = Array.from($("rb-files").files);
+  if (files.length === 0) { log.textContent = "Seleziona almeno un file modificato da reiniettare."; log.style.color = "var(--err)"; return; }
+  if (!state.declToken) { log.textContent = "✗ Serve la dichiarazione (vista Patcher & CRC)."; log.style.color = "var(--err)"; return; }
+
+  const isZip = rbImageName.toLowerCase().endsWith(".zip");
+  const replacements = [];
+  for (const f of files) replacements.push({ name: f.name, fileBase64: toB64(await fileToBytes(f)) });
+
+  log.textContent = "⚡ Rebuild reale in corso (rilettura completa + ricostruzione)..."; log.style.color = "var(--warn)";
+  try {
+    const body = { fullName: state.declName, token: state.declToken, replacements };
+    let d;
+    if (isZip) {
+      d = await api("/api/dc/gdi/build", { ...body, zipBase64: toB64(rbImage) });
+      if (d.error) { log.textContent = "✗ " + d.error; log.style.color = "var(--err)"; return; }
+      log.style.color = "var(--ok)";
+      log.textContent = "✓ GDI ricostruito (" + (d.zipSize / 1024).toFixed(0) + " KB). Sostituiti:\\n" + d.applied.join("\\n") +
+        (d.unmatched.length ? "\\n⚠ non abbinati (nome non trovato): " + d.unmatched.join(", ") : "");
+      download(fromB64(d.zipBase64), rbImageName.replace(/\.[^.]+$/, "") + "_rebuilt.zip", "Scarica GDI rebuild (" + (d.zipSize / 1024).toFixed(0) + " KB)", "rb-dl");
+    } else {
+      d = await api("/api/psp/iso/build", { ...body, imageBase64: toB64(rbImage), alsoCso });
+      if (d.error) { log.textContent = "✗ " + d.error; log.style.color = "var(--err)"; return; }
+      log.style.color = "var(--ok)";
+      log.textContent = "✓ ISO ricostruita (" + (d.isoSize / 1024).toFixed(0) + " KB). Sostituiti:\\n" + d.applied.join("\\n") +
+        (d.unmatched.length ? "\\n⚠ non abbinati: " + d.unmatched.join(", ") : "");
+      download(fromB64(d.isoBase64), rbImageName.replace(/\.[^.]+$/, "") + "_rebuilt.iso", "Scarica ISO rebuild (" + (d.isoSize / 1024).toFixed(0) + " KB)", "rb-dl");
+      if (d.csoBase64) download(fromB64(d.csoBase64), rbImageName.replace(/\.[^.]+$/, "") + "_rebuilt.cso", "Scarica CSO rebuild (" + (d.csoSize / 1024).toFixed(0) + " KB)", "rb-dl");
+    }
+    setFlow("fs-export", true);
   } catch (e) { log.textContent = "Errore: " + e.message; log.style.color = "var(--err)"; }
 }
 

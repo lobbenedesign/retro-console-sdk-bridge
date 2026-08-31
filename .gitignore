@@ -24,3 +24,5 @@ data/
 *.rar
 Super Mario*
 .DS_Store
+dist/
+*.bun-build

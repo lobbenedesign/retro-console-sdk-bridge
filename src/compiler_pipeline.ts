@@ -1,5 +1,6 @@
 import { existsSync, writeFileSync, readFileSync, unlinkSync } from "fs";
 import { join } from "path";
+import { appRootDir } from "./app_paths";
 
 // Cancella i file temporanei di una compilazione, ignorando eventuali
 // percorsi mai creati (es. l'ELF quando il link è fallito). Prima non
@@ -233,7 +234,7 @@ export class CompilerPipeline {
     const LIBOGC_INC = `${DEVKITPRO}/libogc/include`;
 
     // Compilazione reale del sorgente in un vero object file.
-    const compileArgs = [compilerPath, ...archFlags[platform], "-O2", "-c", sourceFile, "-o", objFile, `-I${join(import.meta.dir, "..", "include")}`];
+    const compileArgs = [compilerPath, ...archFlags[platform], "-O2", "-c", sourceFile, "-o", objFile, `-I${join(appRootDir(), "include")}`];
     if (platform === "switch") compileArgs.push(`-I${DEVKITPRO}/libnx/include`);
     if (platform === "wii" || platform === "gamecube") compileArgs.push(`-I${LIBOGC_INC}`);
     const proc = Bun.spawn(compileArgs, { stdout: "pipe", stderr: "pipe" });

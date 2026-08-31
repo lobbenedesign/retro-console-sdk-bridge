@@ -20,8 +20,9 @@
 import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { createHmac, randomBytes } from "crypto";
+import { userDataDir } from "./app_paths";
 
-const DATA_DIR = join(import.meta.dir, "..", "data");
+const DATA_DIR = userDataDir();
 const LOG_PATH = join(DATA_DIR, "rom_patch_declarations.jsonl");
 const SECRET_PATH = join(DATA_DIR, ".declaration_secret");
 

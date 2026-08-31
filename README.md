@@ -571,11 +571,6 @@ pannelli indipendenti che richiedevano ciascuno il proprio upload; ora:
   riferimento di formato): elenco file con dimensioni e LBA.
 - `POST /api/psp/fs/extract` — `{ imageBase64, path }` → estrazione reale
   di un singolo file dal disco (funziona identico su ISO e CSO).
-- `POST /api/rom/prepare` — `{ fullName, token, romBase64 }` → unzip +
-  identificazione + restituzione della ROM N64 pronta per gli altri tool
-  (CRC/split/level-script), convertita in .z64 se era .v64/.n64 (dietro
-  gate di dichiarazione).
-
 ### Test automatizzati
 
 68 test reali (151 `expect()`), eseguiti con `bun test`, in 8 file sotto

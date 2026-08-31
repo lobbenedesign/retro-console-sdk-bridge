@@ -37,6 +37,7 @@ import { encodeGim, type GimFormat } from "./src/psp_gim_encode";
 import { parseLevelScript, serializeLevelScript, EDITABLE_COMMAND_NAMES, type LevelCommand } from "./src/sm64_level_script";
 import { parseN64RomHeader, writeN64RomHeader } from "./src/n64_rom_header";
 import { decodeN64Texture, requiredByteLength, BITS_PER_PIXEL, type N64TextureFormat } from "./src/n64_texture";
+import { ChdFile, isChd } from "./src/chd";
 import { join } from "path";
 import { existsSync, writeFileSync } from "fs";
 
@@ -347,6 +348,37 @@ const server = Bun.serve({
         const zip = new Uint8Array(Buffer.from(body.zipBase64 || "", "base64"));
         const file = extractGdiFile(zip, body.path || "");
         return new Response(JSON.stringify({ path: body.path, size: file.length, fileBase64: Buffer.from(file).toString("base64") }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 4q. CHD (MAME Compressed Hunks of Data) — lettura header/metadata di
+    // un'immagine PSP/Dreamcast compressa. Solo v5 zlib, senza parent
+    // (vedi src/chd.ts per i limiti dichiarati onestamente).
+    if (url.pathname === "/api/chd/info" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const data = new Uint8Array(Buffer.from(body.chdBase64 || "", "base64"));
+        if (!isChd(data)) return new Response(JSON.stringify({ error: "Il file non ha il magic 'MComprHD' (non è un CHD)." }), { status: 400, headers });
+        const chd = new ChdFile(data);
+        return new Response(JSON.stringify(chd.info), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+      }
+    }
+
+    // 4r. CHD — estrae un intervallo logico di byte decompressi (es. per
+    // isolare una traccia e passarla alle pipeline ISO9660/GDI esistenti).
+    if (url.pathname === "/api/chd/extract" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const data = new Uint8Array(Buffer.from(body.chdBase64 || "", "base64"));
+        const chd = new ChdFile(data);
+        const offset = Number(body.offset || 0);
+        const length = Number(body.length || chd.logicalBytes);
+        const out = chd.readLogical(offset, length);
+        return new Response(JSON.stringify({ offset, length: out.length, dataBase64: Buffer.from(out).toString("base64") }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
       }
@@ -936,44 +968,6 @@ const server = Bun.serve({
             confidence: e.confidence,
             detail: e.detail,
           })),
-        }), { headers });
-      } catch (e: any) {
-        return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
-      }
-    }
-
-    // 13p. Unzip + identificazione + conversione z64 in un colpo solo: per
-    // ZIP o ROM N64 non-z64 restituisce anche i byte pronti per gli altri
-    // tool (crc/split/level-script), sempre dietro gate di dichiarazione.
-    if (url.pathname === "/api/rom/prepare" && req.method === "POST") {
-      try {
-        const body: any = await req.json();
-        if (!verifyToken(body.token, body.fullName)) {
-          return new Response(JSON.stringify({ error: "Dichiarazione non valida o mancante (stesso gate del patcher)." }), { status: 403, headers });
-        }
-        const data = new Uint8Array(Buffer.from(body.romBase64 || "", "base64"));
-        const result = identifyRomFile(data);
-        // seleziona la prima ROM N64 trovata (convertita se serve) o la
-        // prima ROM identificata con confianza "magic"
-        let prepared = null;
-        const base = result.isArchive
-          ? unzip(data)
-          : [{ name: "(file caricato)", data }];
-        for (const entry of base) {
-          if (entry.data.length < 16) continue; // voci non-ROM (readme ecc.) saltate
-          const id = identifyConsole(entry.data);
-          if (id.console === "Nintendo 64" && id.convertedZ64) {
-            prepared = { name: entry.name, romBase64: Buffer.from(id.convertedZ64).toString("base64"), size: id.convertedZ64.length, note: "v64/n64 convertita in z64" };
-            break;
-          }
-          if (id.console === "Nintendo 64" && !prepared) {
-            prepared = { name: entry.name, romBase64: Buffer.from(entry.data).toString("base64"), size: entry.data.length, note: "z64 già pronta" };
-          }
-        }
-        return new Response(JSON.stringify({
-          isArchive: result.isArchive,
-          entries: result.entries.map((e) => ({ name: e.name, console: e.console, format: e.format, confidence: e.confidence })),
-          prepared,
         }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });

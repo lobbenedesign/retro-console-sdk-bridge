@@ -381,6 +381,24 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     <div class="log" id="rb-log" style="margin-top:10px">—</div>
     <div id="rb-dl"></div>
   </div>
+
+  <div class="card">
+    <h2>🗄️ CHD (MAME Compressed Hunks of Data)</h2>
+    <p class="muted" style="margin:0 0 10px">Immagini PSP/Dreamcast compresse col formato CHD v5 di MAME. Solo hunk codec zlib, senza catena parent (diff) — dichiarato onestamente,
+    vedi src/chd.ts. L'estrazione produce byte grezzi decompressi (es. una traccia dati) da riusare nei pannelli PSP/Dreamcast qui sopra.</p>
+    <div class="row">
+      <div class="field">File .chd<input type="file" id="chd-file" accept=".chd" /></div>
+      <button class="btn pri" onclick="chdInfoUI()">Leggi info</button>
+    </div>
+    <div class="log" id="chd-log" style="margin-top:10px">—</div>
+    <div id="chd-info" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:8px">
+      <div class="field">Offset logico (byte)<input type="number" id="chd-off" value="0" style="width:120px" /></div>
+      <div class="field">Lunghezza (byte, 0 = tutto)<input type="number" id="chd-len" value="0" style="width:140px" /></div>
+      <button class="btn purple" onclick="chdExtractUI()">Estrai intervallo</button>
+    </div>
+    <div id="chd-dl"></div>
+  </div>
 </section>
 
 <!-- ============ VISTA: DISASSEMBLER ============ -->
@@ -1216,6 +1234,42 @@ async function rebuildUI(alsoCso) {
       if (d.csoBase64) download(fromB64(d.csoBase64), rbImageName.replace(/\.[^.]+$/, "") + "_rebuilt.cso", "Scarica CSO rebuild (" + (d.csoSize / 1024).toFixed(0) + " KB)", "rb-dl");
     }
     setFlow("fs-export", true);
+  } catch (e) { log.textContent = "Errore: " + e.message; log.style.color = "var(--err)"; }
+}
+
+// ================= CHD (MAME) =================
+let chdBytes = null, chdName = "";
+$("chd-file").addEventListener("change", async e => { if (e.target.files[0]) { chdBytes = await fileToBytes(e.target.files[0]); chdName = e.target.files[0].name; } });
+
+async function chdInfoUI() {
+  const log = $("chd-log"), info = $("chd-info");
+  info.innerHTML = "";
+  if (!chdBytes) { log.textContent = "Seleziona un file .chd."; log.style.color = "var(--err)"; return; }
+  log.textContent = "⚡ Lettura header/mappa/metadata reale..."; log.style.color = "var(--warn)";
+  try {
+    const d = await api("/api/chd/info", { chdBase64: toB64(chdBytes) });
+    if (d.error) { log.textContent = "✗ " + d.error; log.style.color = "var(--err)"; return; }
+    log.style.color = "var(--ok)";
+    log.textContent = "✓ CHD v" + d.version + " — " + (d.logicalBytes / 1024 / 1024).toFixed(1) + " MB logici, " +
+      d.hunkCount + " hunk da " + d.hunkBytes + " byte, codec: " + (d.codecs.join(", ") || "nessuno");
+    const metaRows = d.metadata.map(m => "<tr><td>" + m.tag + "</td><td>" + m.length + " byte</td></tr>").join("");
+    info.innerHTML = "<table><thead><tr><th>Tag metadata</th><th>Lunghezza</th></tr></thead><tbody>" +
+      (metaRows || "<tr><td colspan=2>Nessun metadata.</td></tr>") + "</tbody></table>";
+  } catch (e) { log.textContent = "Errore: " + e.message; log.style.color = "var(--err)"; }
+}
+
+async function chdExtractUI() {
+  const log = $("chd-log");
+  if (!chdBytes) { log.textContent = "Seleziona un file .chd."; log.style.color = "var(--err)"; return; }
+  const offset = Number($("chd-off").value || 0);
+  const length = Number($("chd-len").value || 0);
+  log.textContent = "⚡ Estrazione reale (decompressione hunk)..."; log.style.color = "var(--warn)";
+  try {
+    const d = await api("/api/chd/extract", { chdBase64: toB64(chdBytes), offset, length: length || undefined });
+    if (d.error) { log.textContent = "✗ " + d.error; log.style.color = "var(--err)"; return; }
+    log.style.color = "var(--ok)";
+    log.textContent = "✓ Estratti " + d.length + " byte da offset " + d.offset + ".";
+    download(fromB64(d.dataBase64), chdName.replace(/\.[^.]+$/, "") + "_extract.bin", "Scarica intervallo estratto (" + (d.length / 1024).toFixed(0) + " KB)", "chd-dl");
   } catch (e) { log.textContent = "Errore: " + e.message; log.style.color = "var(--err)"; }
 }
 
